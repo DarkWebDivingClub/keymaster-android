@@ -6,8 +6,8 @@ import android.os.Bundle
 import android.util.Log
 import club.dwdc.keymaster.crypto.EventSigner
 import club.dwdc.keymaster.crypto.NostrKeyService
-import club.dwdc.keymaster.data.AccountRepository
 import club.dwdc.keymaster.data.AppPermission
+import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.PermissionRepository
 import club.dwdc.keymaster.data.SeedRepository
 
@@ -87,7 +87,6 @@ class SignerActivity : Activity() {
      * Resolve the account for signing/encrypting operations and check permissions.
      */
     private fun resolveAndProcess(intent: Intent, caller: String) {
-        val accountRepo = AccountRepository(this)
         val permRepo = PermissionRepository(this)
         val seedRepo = SeedRepository(this)
         val mnemonic = seedRepo.getMnemonic()!!
@@ -95,10 +94,10 @@ class SignerActivity : Activity() {
 
         val currentUser = intent.getStringExtra("current_user")
         val account = if (!currentUser.isNullOrEmpty()) {
-            accountRepo.findAccountByPubkey(currentUser)
+            KeyMasterProvider.findAccountByPubkey(this, currentUser)
         } else {
             // Fall back to first (default) account
-            accountRepo.getAccounts().firstOrNull()
+            KeyMasterProvider.getAccounts(this).firstOrNull()
         }
 
         if (account == null) {

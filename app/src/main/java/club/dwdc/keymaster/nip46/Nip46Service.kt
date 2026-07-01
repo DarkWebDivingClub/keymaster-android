@@ -11,9 +11,10 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import club.dwdc.keymaster.R
+import club.dwdc.keymaster.NostrKeyEntry
 import club.dwdc.keymaster.crypto.NostrKeyService
 import club.dwdc.keymaster.crypto.toHexString
-import club.dwdc.keymaster.data.AccountRepository
+import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.Nip46Session
 import club.dwdc.keymaster.data.Nip46SessionRepository
 import club.dwdc.keymaster.data.SeedRepository
@@ -136,11 +137,19 @@ class Nip46Service : Service(), RelayPoolListener {
             return
         }
 
-        // Resolve account pubkey
-        val seedRepo = SeedRepository(this)
-        val mnemonic = seedRepo.getMnemonic() ?: return
-        val passphrase = seedRepo.getPassphrase()
-        val accountPubkey = NostrKeyService(mnemonic, passphrase, accountIdentity).getPublicKeyHex()
+        // Resolve account pubkey from KVMetaStore
+        val store = KeyMasterProvider.getMetaStore(this)
+        val nostrEntry = store.byIdentity(accountIdentity)
+            .filterIsInstance<NostrKeyEntry>()
+            .firstOrNull()
+        val accountPubkey = if (nostrEntry != null) {
+            nostrEntry.pubkey()
+        } else {
+            val seedRepo = SeedRepository(this)
+            val mnemonic = seedRepo.getMnemonic() ?: return
+            val passphrase = seedRepo.getPassphrase()
+            NostrKeyService(mnemonic, passphrase, accountIdentity).getPublicKeyHex()
+        }
 
         // Create and persist session
         val session = Nip46Session(

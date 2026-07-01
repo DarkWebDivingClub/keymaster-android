@@ -16,12 +16,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import club.dwdc.keymaster.crypto.NostrKeyService
 import club.dwdc.keymaster.data.Account
-import club.dwdc.keymaster.data.AccountRepository
 import club.dwdc.keymaster.data.AppPermission
+import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.PermissionRepository
-import club.dwdc.keymaster.data.SeedRepository
 import club.dwdc.keymaster.ui.components.CreateAccountDialog
 import club.dwdc.keymaster.ui.theme.KeyMasterTheme
 
@@ -59,18 +57,14 @@ class AccountPickerActivity : ComponentActivity() {
                         })
                         finish()
                     },
-                    onNewAccount = { identity ->
-                        val seedRepo = SeedRepository(this)
-                        val mnemonic = seedRepo.getMnemonic() ?: return@AccountPickerScreen
-                        val passphrase = seedRepo.getPassphrase()
-                        val pubkeyHex = NostrKeyService(mnemonic, passphrase, identity).getPublicKeyHex()
-                        AccountRepository(this).addAccount(Account(identity, pubkeyHex))
+                    onNewAccount = { identity, name, email ->
+                        val controller = KeyMasterProvider.getController(this) ?: return@AccountPickerScreen
+                        controller.createIdentity(identity, name, email)
                     },
                     onDeny = {
                         setResult(Activity.RESULT_CANCELED)
                         finish()
-                    },
-                    accountRepository = AccountRepository(this)
+                    }
                 )
             }
         }
@@ -78,8 +72,8 @@ class AccountPickerActivity : ComponentActivity() {
 
     private fun resolveAppLabel(packageName: String): String {
         return try {
-            val appInfo = packageManager.getApplicationInfo(packageName, 0)
-            packageManager.getApplicationLabel(appInfo).toString()
+            val appInfo = this.packageManager.getApplicationInfo(packageName, 0)
+            this.packageManager.getApplicationLabel(appInfo).toString()
         } catch (_: PackageManager.NameNotFoundException) {
             packageName
         }
@@ -91,11 +85,11 @@ private fun AccountPickerScreen(
     appLabel: String,
     packageName: String,
     onAccountSelected: (Account) -> Unit,
-    onNewAccount: (identity: String) -> Unit,
-    onDeny: () -> Unit,
-    accountRepository: AccountRepository
+    onNewAccount: (identity: String, name: String, email: String) -> Unit,
+    onDeny: () -> Unit
 ) {
-    var accounts by remember { mutableStateOf(accountRepository.getAccounts()) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var accounts by remember { mutableStateOf(KeyMasterProvider.getAccounts(context)) }
     var showCreateDialog by remember { mutableStateOf(false) }
 
     Surface(
@@ -185,9 +179,9 @@ private fun AccountPickerScreen(
     if (showCreateDialog) {
         CreateAccountDialog(
             onDismiss = { showCreateDialog = false },
-            onCreate = { identity ->
-                onNewAccount(identity)
-                accounts = accountRepository.getAccounts()
+            onCreate = { identity, name, email ->
+                onNewAccount(identity, name, email)
+                accounts = KeyMasterProvider.getAccounts(context)
                 showCreateDialog = false
             }
         )

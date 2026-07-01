@@ -9,9 +9,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import club.dwdc.keymaster.crypto.NostrKeyService
-import club.dwdc.keymaster.data.Account
-import club.dwdc.keymaster.data.AccountRepository
+import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.SeedRepository
 
 private enum class SetupStep {
@@ -28,8 +26,10 @@ fun SetupScreen(onSetupComplete: () -> Unit) {
             val seedRepo = SeedRepository(context)
             seedRepo.storeSeed(mnemonic, passphrase)
 
-            val pubkeyHex = NostrKeyService(mnemonic, passphrase, "default").getPublicKeyHex()
-            AccountRepository(context).addAccount(Account("default", pubkeyHex))
+            // Reset cached state so controller picks up the new seed
+            KeyMasterProvider.reset()
+            val controller = KeyMasterProvider.getController(context)
+            controller?.createIdentity("default", "default", "default")
 
             onSetupComplete()
         }

@@ -1,6 +1,7 @@
 package club.dwdc.keymaster.ui
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.navigation.NavType
@@ -9,6 +10,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import club.dwdc.keymaster.data.AccountRepository
+import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.PermissionRepository
 import club.dwdc.keymaster.data.SeedRepository
 import club.dwdc.keymaster.nip46.Nip46Service
@@ -21,21 +23,20 @@ import club.dwdc.keymaster.ui.theme.KeyMasterTheme
 import androidx.compose.runtime.*
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val PREFS_NAME = "keymaster_migration"
+        private const val KEY_ACCOUNTS_MIGRATED = "accounts_migrated_to_kvmetastore"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Migrate from single-account to multi-account if needed
         val seedRepo = SeedRepository(this)
-        val accountRepo = AccountRepository(this)
         if (seedRepo.hasSeed()) {
-            val mnemonic = seedRepo.getMnemonic()!!
-            val passphrase = seedRepo.getPassphrase()
-            if (!accountRepo.hasAccounts()) {
-                accountRepo.migrateFromSingleAccount(mnemonic, passphrase)
-                PermissionRepository(this).migratePermissions(accountRepo.getAccounts().first().pubkeyHex)
-            }
-            // Always ensure the "default" account exists
-            accountRepo.ensureDefaultAccount(mnemonic, passphrase)
+            migrateAccountsToKVMetaStore()
+            ensureDefaultIdentity()
         }
 
         setContent {
@@ -101,6 +102,62 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Migrate existing accounts from AccountRepository to KVMetaStore.
+     * Runs once on upgrade from the old account model.
+     */
+    private fun migrateAccountsToKVMetaStore() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_ACCOUNTS_MIGRATED, false)) return
+
+        val accountRepo = AccountRepository(this)
+        val oldAccounts = accountRepo.getAccounts()
+        if (oldAccounts.isEmpty()) {
+            // No old accounts — mark as migrated (fresh install or already empty)
+            prefs.edit().putBoolean(KEY_ACCOUNTS_MIGRATED, true).apply()
+            return
+        }
+
+        val controller = KeyMasterProvider.getController(this) ?: return
+        for (account in oldAccounts) {
+            // Check if identity already exists in KVMetaStore
+            val existing = KeyMasterProvider.getMetaStore(this).byIdentity(account.identity)
+            if (existing.isEmpty()) {
+                controller.createIdentity(account.identity, account.identity, account.identity)
+                Log.d(TAG, "Migrated account: ${account.identity}")
+            }
+        }
+
+        // Migrate permissions for the first account if needed
+        if (oldAccounts.isNotEmpty()) {
+            val firstOldPubkey = oldAccounts.first().pubkeyHex
+            val firstNewAccount = KeyMasterProvider.findAccountByPubkey(this, firstOldPubkey)
+            if (firstNewAccount == null) {
+                // Pubkeys may differ (old used NostrKeyService, new uses KeyMasterController)
+                // Migrate permissions to the new pubkey for the same identity
+                val newAccounts = KeyMasterProvider.getAccounts(this)
+                if (newAccounts.isNotEmpty()) {
+                    PermissionRepository(this).migratePermissions(newAccounts.first().pubkeyHex)
+                }
+            }
+        }
+
+        prefs.edit().putBoolean(KEY_ACCOUNTS_MIGRATED, true).apply()
+        Log.d(TAG, "Account migration complete")
+    }
+
+    /**
+     * Ensure the "default" identity exists in KVMetaStore.
+     */
+    private fun ensureDefaultIdentity() {
+        val store = KeyMasterProvider.getMetaStore(this)
+        val existing = store.byIdentity("default")
+        if (existing.isEmpty()) {
+            val controller = KeyMasterProvider.getController(this) ?: return
+            controller.createIdentity("default", "default", "default")
         }
     }
 }

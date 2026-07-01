@@ -8,8 +8,8 @@ import android.net.Uri
 import android.util.Log
 import club.dwdc.keymaster.crypto.EventSigner
 import club.dwdc.keymaster.crypto.NostrKeyService
-import club.dwdc.keymaster.data.AccountRepository
 import club.dwdc.keymaster.data.AppPermission
+import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.PermissionRepository
 import club.dwdc.keymaster.data.SeedRepository
 
@@ -65,15 +65,14 @@ class SignerContentProvider : ContentProvider() {
 
         val mnemonic = seedRepo.getMnemonic()!!
         val passphrase = seedRepo.getPassphrase()
-        val accountRepo = AccountRepository(ctx)
         val permRepo = PermissionRepository(ctx)
 
         // Resolve account from current_user (projection[2]) or fall back to default
         val currentUser = projection?.getOrNull(2)?.takeIf { it.isNotEmpty() }
         val account = if (currentUser != null) {
-            accountRepo.findAccountByPubkey(currentUser)
+            KeyMasterProvider.findAccountByPubkey(ctx, currentUser)
         } else {
-            accountRepo.getAccounts().firstOrNull()
+            KeyMasterProvider.getAccounts(ctx).firstOrNull()
         }
 
         if (account == null) {
