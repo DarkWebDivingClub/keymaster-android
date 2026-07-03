@@ -1,6 +1,5 @@
 package club.dwdc.keymaster.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -24,8 +23,11 @@ import club.dwdc.keymaster.GPGKeyEntry
 import club.dwdc.keymaster.NostrKeyEntry
 import club.dwdc.keymaster.SSHKeyEntry
 import club.dwdc.keymaster.crypto.NostrKeyService
+import club.dwdc.keymaster.avatar.AvatarService
 import club.dwdc.keymaster.data.Account
 import club.dwdc.keymaster.data.AppPermission
+import club.dwdc.keymaster.data.AvatarSession
+import club.dwdc.keymaster.data.AvatarSessionRepository
 import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.Nip46Session
 import club.dwdc.keymaster.data.Nip46SessionRepository
@@ -35,11 +37,16 @@ import club.dwdc.keymaster.nip46.Nip46Service
 import club.dwdc.keymaster.ui.components.CreateAccountDialog
 
 @Composable
-fun HomeScreen(onNavigateToNip46Scan: (accountIdentity: String) -> Unit = {}) {
+fun HomeScreen(
+    onNavigateToNip46Scan: (accountIdentity: String) -> Unit = {},
+    onNavigateToAvatarScan: (identity: String) -> Unit = {},
+    onNavigateToRestoreScan: () -> Unit = {}
+) {
     val context = LocalContext.current
     val seedRepo = SeedRepository(context)
     val permRepo = PermissionRepository(context)
     val sessionRepo = Nip46SessionRepository(context)
+    val avatarSessionRepo = AvatarSessionRepository(context)
     val mnemonic = seedRepo.getMnemonic()
     val passphrase = seedRepo.getPassphrase()
 
@@ -123,7 +130,9 @@ fun HomeScreen(onNavigateToNip46Scan: (accountIdentity: String) -> Unit = {}) {
                     passphrase = passphrase,
                     permRepo = permRepo,
                     sessionRepo = sessionRepo,
+                    avatarSessionRepo = avatarSessionRepo,
                     onConnectNip46 = { onNavigateToNip46Scan(accounts[page].identity) },
+                    onNavigateToAvatarScan = { onNavigateToAvatarScan(accounts[page].identity) },
                     onDeleteAccount = {
                         KeyMasterProvider.getMetaStore(context)
                             .removeByIdentity(accounts[page].identity)
@@ -131,7 +140,10 @@ fun HomeScreen(onNavigateToNip46Scan: (accountIdentity: String) -> Unit = {}) {
                     }
                 )
             } else {
-                AddAccountPage(onClick = { showCreateDialog = true })
+                AddAccountPage(
+                    onCreate = { showCreateDialog = true },
+                    onRestore = onNavigateToRestoreScan
+                )
             }
         }
     }
@@ -158,7 +170,9 @@ private fun AccountPage(
     passphrase: String,
     permRepo: PermissionRepository,
     sessionRepo: Nip46SessionRepository,
+    avatarSessionRepo: AvatarSessionRepository,
     onConnectNip46: () -> Unit,
+    onNavigateToAvatarScan: () -> Unit,
     onDeleteAccount: () -> Unit
 ) {
     val context = LocalContext.current
@@ -177,15 +191,17 @@ private fun AccountPage(
     var copiedNpub by remember { mutableStateOf(false) }
     var permissions by remember { mutableStateOf(permRepo.getPermissionsForAccount(account.pubkeyHex)) }
     var nip46Sessions by remember { mutableStateOf(sessionRepo.getSessionsForAccount(account.pubkeyHex)) }
+    var avatarSession by remember { mutableStateOf(avatarSessionRepo.getSession()) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    // Refresh permissions and sessions when lifecycle resumes
+    // Refresh permissions, sessions, and avatar state when lifecycle resumes
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, account.pubkeyHex) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 permissions = permRepo.getPermissionsForAccount(account.pubkeyHex)
                 nip46Sessions = sessionRepo.getSessionsForAccount(account.pubkeyHex)
+                avatarSession = avatarSessionRepo.getSession()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -280,6 +296,19 @@ private fun AccountPage(
 
         // Derived Keys card
         KeyEntriesCard(account.identity)
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Avatar card
+        AvatarCard(
+            avatarSession = avatarSession,
+            accountIdentity = account.identity,
+            onAttach = onNavigateToAvatarScan,
+            onDetach = {
+                AvatarService.detach(context)
+                avatarSession = null
+            }
+        )
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -536,6 +565,70 @@ private fun KeyEntriesCard(identity: String) {
 }
 
 @Composable
+private fun AvatarCard(
+    avatarSession: AvatarSession?,
+    accountIdentity: String,
+    onAttach: () -> Unit,
+    onDetach: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Avatar",
+                style = MaterialTheme.typography.titleSmall
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (avatarSession != null && avatarSession.identity == accountIdentity) {
+                Text(
+                    text = avatarSession.relayUrl,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = "Identity: ${avatarSession.identity}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedButton(
+                    onClick = onDetach,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Detach")
+                }
+            } else {
+                Text(
+                    text = "Not connected",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = onAttach,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Attach to Avatar")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun KeyTypeRow(type: String, detail: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -589,11 +682,10 @@ private fun Nip46SessionRow(
 }
 
 @Composable
-private fun AddAccountPage(onClick: () -> Unit) {
+private fun AddAccountPage(onCreate: () -> Unit, onRestore: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(onClick = onClick)
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -603,13 +695,20 @@ private fun AddAccountPage(onClick: () -> Unit) {
                 style = MaterialTheme.typography.displayLarge,
                 color = MaterialTheme.colorScheme.primary
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Create new account",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
-                textAlign = TextAlign.Center
-            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = onCreate,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Create New Account")
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onRestore,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Restore from QR")
+            }
         }
     }
 }

@@ -59,5 +59,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Avatar Relay Connection Service -->
+        <service
+            android:name=".avatar.AvatarService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
     </application>
 </manifest>
