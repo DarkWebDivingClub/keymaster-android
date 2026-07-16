@@ -9,9 +9,14 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import club.dwdc.keymaster.AbstractKeyEntry
 import club.dwdc.keymaster.AvatarDescriptor
+import club.dwdc.keymaster.KeyMasterController
+import club.dwdc.keymaster.NostrTransport
 import club.dwdc.keymaster.R
 import club.dwdc.keymaster.data.AvatarSession
 import club.dwdc.keymaster.data.AvatarSessionRepository
@@ -22,6 +27,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -32,6 +39,8 @@ class AvatarService : Service() {
 
     private lateinit var sessionRepo: AvatarSessionRepository
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var previousConnectionState: NostrTransport.ConnectionState =
+        NostrTransport.ConnectionState.DISCONNECTED
 
     override fun onCreate() {
         super.onCreate()
@@ -93,6 +102,7 @@ class AvatarService : Service() {
 
                 // Auto-approve all requests (first pass — proper UI in later mission)
                 controller.setApprovalHandler { _, _ -> true }
+                registerConnectionStateListener(controller)
 
                 val attachId = if (additionalIdentities.isEmpty()) {
                     controller.attach(descriptor, identity)
@@ -150,6 +160,7 @@ class AvatarService : Service() {
                     ?: throw IllegalStateException("No seed available")
 
                 controller.setApprovalHandler { _, _ -> true }
+                registerConnectionStateListener(controller)
 
                 val descriptor = AvatarDescriptor.fromJson(session.descriptorJson)
                 val attachId = if (session.additionalIdentities.isEmpty()) {
@@ -184,12 +195,58 @@ class AvatarService : Service() {
         }
     }
 
+    private fun registerConnectionStateListener(controller: KeyMasterController) {
+        controller.setConnectionStateListener { state ->
+            Log.d(TAG, "Connection state: $state")
+            _connectionState.value = state
+
+            // Update notification based on state
+            val text = when (state) {
+                NostrTransport.ConnectionState.CONNECTED -> {
+                    val session = sessionRepo.getSession()
+                    "Attached to ${session?.relayUrl ?: "relay"}"
+                }
+                NostrTransport.ConnectionState.RETRYING -> "Reconnecting..."
+                NostrTransport.ConnectionState.DISCONNECTED -> "Disconnected"
+            }
+            updateNotification(text)
+
+            // Vibrate on RETRYING -> CONNECTED transition (reconnected after sleep)
+            if (state == NostrTransport.ConnectionState.CONNECTED &&
+                previousConnectionState == NostrTransport.ConnectionState.RETRYING
+            ) {
+                vibrate(200)
+            }
+            previousConnectionState = state
+        }
+    }
+
+    private fun vibrate(durationMs: Long) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val mgr = getSystemService(VibratorManager::class.java)
+                mgr?.defaultVibrator?.vibrate(
+                    VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                vibrator?.vibrate(
+                    VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Vibration failed", e)
+        }
+    }
+
     private fun cleanupController() {
         try {
             KeyMasterProvider.getController(this)?.detach()
         } catch (e: Exception) {
             Log.w(TAG, "Error during detach cleanup", e)
         }
+        _connectionState.value = NostrTransport.ConnectionState.DISCONNECTED
     }
 
     private fun createNotificationChannel() {
@@ -239,6 +296,9 @@ class AvatarService : Service() {
         private const val EXTRA_DESCRIPTOR_JSON = "descriptor_json"
         private const val EXTRA_IDENTITY = "identity"
         private const val EXTRA_ADDITIONAL_IDENTITIES = "additional_identities"
+
+        private val _connectionState = MutableStateFlow(NostrTransport.ConnectionState.DISCONNECTED)
+        val connectionState: StateFlow<NostrTransport.ConnectionState> = _connectionState
 
         fun startAttach(
             context: Context,

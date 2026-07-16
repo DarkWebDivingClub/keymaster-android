@@ -1,14 +1,18 @@
 package club.dwdc.keymaster.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -22,6 +26,7 @@ import club.dwdc.keymaster.AbstractKeyEntry
 import club.dwdc.keymaster.GPGKeyEntry
 import club.dwdc.keymaster.NostrKeyEntry
 import club.dwdc.keymaster.SSHKeyEntry
+import club.dwdc.keymaster.NostrTransport
 import club.dwdc.keymaster.crypto.NostrKeyService
 import club.dwdc.keymaster.avatar.AvatarService
 import club.dwdc.keymaster.data.Account
@@ -571,6 +576,8 @@ private fun AvatarCard(
     onAttach: () -> Unit,
     onDetach: () -> Unit
 ) {
+    val connState by AvatarService.connectionState.collectAsState()
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -596,6 +603,11 @@ private fun AvatarCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Connection state indicator
+                ConnectionStateRow(connState)
 
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -625,6 +637,32 @@ private fun AvatarCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ConnectionStateRow(state: NostrTransport.ConnectionState) {
+    val (color, label) = when (state) {
+        NostrTransport.ConnectionState.CONNECTED -> Color(0xFF4CAF50) to "Connected"
+        NostrTransport.ConnectionState.RETRYING -> Color(0xFFFFC107) to "Reconnecting..."
+        NostrTransport.ConnectionState.DISCONNECTED -> Color(0xFFF44336) to "Disconnected"
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = 2.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
