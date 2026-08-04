@@ -1,5 +1,7 @@
 package club.dwdc.keymaster.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
@@ -32,7 +34,6 @@ import club.dwdc.keymaster.avatar.AvatarService
 import club.dwdc.keymaster.data.Account
 import club.dwdc.keymaster.data.AppPermission
 import club.dwdc.keymaster.data.AvatarSession
-import club.dwdc.keymaster.data.AvatarSessionRepository
 import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.Nip46Session
 import club.dwdc.keymaster.data.Nip46SessionRepository
@@ -51,7 +52,6 @@ fun HomeScreen(
     val seedRepo = SeedRepository(context)
     val permRepo = PermissionRepository(context)
     val sessionRepo = Nip46SessionRepository(context)
-    val avatarSessionRepo = AvatarSessionRepository(context)
     val mnemonic = seedRepo.getMnemonic()
     val passphrase = seedRepo.getPassphrase()
 
@@ -135,7 +135,6 @@ fun HomeScreen(
                     passphrase = passphrase,
                     permRepo = permRepo,
                     sessionRepo = sessionRepo,
-                    avatarSessionRepo = avatarSessionRepo,
                     onConnectNip46 = { onNavigateToNip46Scan(accounts[page].identity) },
                     onNavigateToAvatarScan = { onNavigateToAvatarScan(accounts[page].identity) },
                     onDeleteAccount = {
@@ -175,7 +174,6 @@ private fun AccountPage(
     passphrase: String,
     permRepo: PermissionRepository,
     sessionRepo: Nip46SessionRepository,
-    avatarSessionRepo: AvatarSessionRepository,
     onConnectNip46: () -> Unit,
     onNavigateToAvatarScan: () -> Unit,
     onDeleteAccount: () -> Unit
@@ -196,7 +194,13 @@ private fun AccountPage(
     var copiedNpub by remember { mutableStateOf(false) }
     var permissions by remember { mutableStateOf(permRepo.getPermissionsForAccount(account.pubkeyHex)) }
     var nip46Sessions by remember { mutableStateOf(sessionRepo.getSessionsForAccount(account.pubkeyHex)) }
-    var avatarSession by remember { mutableStateOf(avatarSessionRepo.getSession()) }
+    val avatarSession by AvatarService.avatarSession.collectAsState()
+    val btReconnectPrompt by AvatarService.showBtReconnectPrompt.collectAsState()
+    var btDialogDismissed by remember { mutableStateOf(false) }
+    // Reset local dismiss when the prompt goes away (connection restored)
+    LaunchedEffect(btReconnectPrompt) {
+        if (!btReconnectPrompt) btDialogDismissed = false
+    }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     // Refresh permissions, sessions, and avatar state when lifecycle resumes
@@ -206,7 +210,6 @@ private fun AccountPage(
             if (event == Lifecycle.Event.ON_RESUME) {
                 permissions = permRepo.getPermissionsForAccount(account.pubkeyHex)
                 nip46Sessions = sessionRepo.getSessionsForAccount(account.pubkeyHex)
-                avatarSession = avatarSessionRepo.getSession()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -311,7 +314,6 @@ private fun AccountPage(
             onAttach = onNavigateToAvatarScan,
             onDetach = {
                 AvatarService.detach(context)
-                avatarSession = null
             }
         )
 
@@ -496,6 +498,32 @@ private fun AccountPage(
             dismissButton = {
                 OutlinedButton(onClick = { showDeleteConfirm = false }) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (btReconnectPrompt && !btDialogDismissed) {
+        AlertDialog(
+            onDismissRequest = { btDialogDismissed = true },
+            title = { Text("Bluetooth disconnected") },
+            text = {
+                Text("Open Bluetooth settings and toggle Internet access on " +
+                     "your laptop to restore the connection.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        btDialogDismissed = true
+                        context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                    }
+                ) {
+                    Text("Open Bluetooth Settings")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { btDialogDismissed = true }) {
+                    Text("Dismiss")
                 }
             }
         )

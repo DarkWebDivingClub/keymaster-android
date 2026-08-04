@@ -16,6 +16,7 @@ import android.os.IBinder
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import android.util.Log
 import club.dwdc.keymaster.AbstractKeyEntry
 import club.dwdc.keymaster.AvatarDescriptor
@@ -26,6 +27,7 @@ import club.dwdc.keymaster.data.AvatarSession
 import club.dwdc.keymaster.data.AvatarSessionRepository
 import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.ui.MainActivity
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Predicate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +48,7 @@ class AvatarService : Service() {
     private var previousConnectionState: NostrTransport.ConnectionState =
         NostrTransport.ConnectionState.DISCONNECTED
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val reconnecting = AtomicBoolean(false)
 
     override fun onCreate() {
         super.onCreate()
@@ -280,7 +283,7 @@ class AvatarService : Service() {
 
                 if (_connectionState.value != NostrTransport.ConnectionState.CONNECTED) {
                     val session = sessionRepo.getSession()
-                    if (session != null) {
+                    if (session != null && reconnecting.compareAndSet(false, true)) {
                         Log.i(TAG, "Connection is down, triggering re-attach " +
                             "after $transport network restored")
                         serviceScope.launch { reconnectAfterNetworkRestore(session) }
@@ -310,24 +313,30 @@ class AvatarService : Service() {
     }
 
     private fun reconnectAfterNetworkRestore(session: AvatarSession) {
-        val delays = longArrayOf(0, 3000, 5000, 10000, 20000)
-        for ((attempt, delay) in delays.withIndex()) {
-            if (delay > 0) {
-                Log.i(TAG, "Retry ${attempt + 1}/${delays.size} in ${delay}ms...")
-                Thread.sleep(delay)
+        try {
+            val delays = longArrayOf(0, 3000, 5000, 10000, 20000)
+            for ((attempt, delay) in delays.withIndex()) {
+                if (delay > 0) {
+                    Log.i(TAG, "Retry ${attempt + 1}/${delays.size} in ${delay}ms...")
+                    Thread.sleep(delay)
+                }
+                try {
+                    doAttachSession(session)
+                    Log.i(TAG, "Re-attached to ${session.relayUrl} after network restore" +
+                        if (attempt > 0) " (attempt ${attempt + 1})" else "")
+                    cancelBtReconnectNotification()
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "Re-attach attempt ${attempt + 1}/${delays.size} failed: ${e.message}")
+                }
             }
-            try {
-                cleanupController()
-                doAttachSession(session)
-                Log.i(TAG, "Re-attached to ${session.relayUrl} after network restore" +
-                    if (attempt > 0) " (attempt ${attempt + 1})" else "")
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "Re-attach attempt ${attempt + 1}/${delays.size} failed: ${e.message}")
-            }
+            Log.e(TAG, "All re-attach attempts failed for ${session.relayUrl}")
+            updateNotification("Reconnect failed")
+            postBtReconnectNotification()
+            _showBtReconnectPrompt.value = true
+        } finally {
+            reconnecting.set(false)
         }
-        Log.e(TAG, "All re-attach attempts failed for ${session.relayUrl}")
-        updateNotification("Reconnect failed")
     }
 
     private fun cleanupController() {
@@ -342,15 +351,25 @@ class AvatarService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val nm = getSystemService(NotificationManager::class.java)
+
+            val foregroundChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Avatar Connection",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps the Avatar relay connection alive"
             }
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+            nm.createNotificationChannel(foregroundChannel)
+
+            val reconnectChannel = NotificationChannel(
+                BT_RECONNECT_CHANNEL_ID,
+                "Bluetooth Reconnect",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts when Bluetooth needs manual reconnection"
+            }
+            nm.createNotificationChannel(reconnectChannel)
         }
     }
 
@@ -375,10 +394,37 @@ class AvatarService : Service() {
         nm.notify(NOTIFICATION_ID, buildNotification(text))
     }
 
+    private fun postBtReconnectNotification() {
+        val settingsIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 1, settingsIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = Notification.Builder(this, BT_RECONNECT_CHANNEL_ID)
+            .setContentTitle("Bluetooth disconnected")
+            .setContentText("Tap to open Bluetooth settings and reconnect")
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(BT_RECONNECT_NOTIFICATION_ID, notification)
+    }
+
+    private fun cancelBtReconnectNotification() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.cancel(BT_RECONNECT_NOTIFICATION_ID)
+        _showBtReconnectPrompt.value = false
+    }
+
     companion object {
         private const val TAG = "AvatarService"
         private const val CHANNEL_ID = "avatar_service"
         private const val NOTIFICATION_ID = 4602
+        private const val BT_RECONNECT_CHANNEL_ID = "bt_reconnect"
+        private const val BT_RECONNECT_NOTIFICATION_ID = 4603
 
         private const val ACTION_ATTACH = "club.dwdc.keymaster.avatar.ATTACH"
         private const val ACTION_DETACH = "club.dwdc.keymaster.avatar.DETACH"
@@ -393,6 +439,9 @@ class AvatarService : Service() {
 
         private val _avatarSession = MutableStateFlow<AvatarSession?>(null)
         val avatarSession: StateFlow<AvatarSession?> = _avatarSession
+
+        private val _showBtReconnectPrompt = MutableStateFlow(false)
+        val showBtReconnectPrompt: StateFlow<Boolean> = _showBtReconnectPrompt
 
         fun startAttach(
             context: Context,
