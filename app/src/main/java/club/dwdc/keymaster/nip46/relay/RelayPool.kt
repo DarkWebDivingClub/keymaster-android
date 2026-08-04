@@ -62,6 +62,21 @@ class RelayPool(private val client: OkHttpClient) : RelayListener {
         }
     }
 
+    /**
+     * Force immediate reconnect on all disconnected relays, bypassing backoff.
+     * Called by NetworkCallback when network is restored.
+     */
+    fun reconnectAll() {
+        val disconnected = relays.values.filter { !it.isConnected }
+        if (disconnected.isEmpty()) return
+        Log.i(TAG, "Forcing reconnect on ${disconnected.size} disconnected relay(s)")
+        for (relay in disconnected) {
+            reconnectDelays[relay.url] = INITIAL_BACKOFF_MS  // reset backoff
+            reconnectHandler.removeCallbacksAndMessages(null) // cancel pending retries
+            relay.connect()
+        }
+    }
+
     fun disconnectAll() {
         reconnectHandler.removeCallbacksAndMessages(null)
         for (relay in relays.values) {

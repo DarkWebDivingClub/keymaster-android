@@ -7,13 +7,18 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import club.dwdc.keymaster.R
+import club.dwdc.keymaster.NostrKeyEntry
 import club.dwdc.keymaster.crypto.NostrKeyService
 import club.dwdc.keymaster.crypto.toHexString
-import club.dwdc.keymaster.data.AccountRepository
+import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.Nip46Session
 import club.dwdc.keymaster.data.Nip46SessionRepository
 import club.dwdc.keymaster.data.SeedRepository
@@ -38,6 +43,7 @@ class Nip46Service : Service(), RelayPoolListener {
     private lateinit var signerKeyRepo: SignerKeyRepository
     private var signerPubHex: String = ""
     private var subscriptionId: String = ""
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -57,6 +63,7 @@ class Nip46Service : Service(), RelayPoolListener {
         sessionRepo = Nip46SessionRepository(this)
         signerKeyRepo = SignerKeyRepository(this)
         signerPubHex = signerKeyRepo.getPublicKeyHex()
+        registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -79,6 +86,7 @@ class Nip46Service : Service(), RelayPoolListener {
 
     override fun onDestroy() {
         Log.d(TAG, "Service destroyed")
+        unregisterNetworkCallback()
         relayPool.disconnectAll()
         super.onDestroy()
     }
@@ -136,11 +144,19 @@ class Nip46Service : Service(), RelayPoolListener {
             return
         }
 
-        // Resolve account pubkey
-        val seedRepo = SeedRepository(this)
-        val mnemonic = seedRepo.getMnemonic() ?: return
-        val passphrase = seedRepo.getPassphrase()
-        val accountPubkey = NostrKeyService(mnemonic, passphrase, accountIdentity).getPublicKeyHex()
+        // Resolve account pubkey from KVMetaStore
+        val store = KeyMasterProvider.getMetaStore(this)
+        val nostrEntry = store.byIdentity(accountIdentity)
+            .filterIsInstance<NostrKeyEntry>()
+            .firstOrNull()
+        val accountPubkey = if (nostrEntry != null) {
+            nostrEntry.pubkey()
+        } else {
+            val seedRepo = SeedRepository(this)
+            val mnemonic = seedRepo.getMnemonic() ?: return
+            val passphrase = seedRepo.getPassphrase()
+            NostrKeyService(mnemonic, passphrase, accountIdentity).getPublicKeyHex()
+        }
 
         // Create and persist session
         val session = Nip46Session(
@@ -213,6 +229,48 @@ class Nip46Service : Service(), RelayPoolListener {
         ensureSubscription()
         updateNotification()
         Log.d(TAG, "Restored ${sessions.size} sessions")
+    }
+
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_BLUETOOTH)
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            .build()
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val caps = cm.getNetworkCapabilities(network)
+                val transport = when {
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) == true -> "BLUETOOTH"
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WIFI"
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "CELLULAR"
+                    else -> "UNKNOWN"
+                }
+                Log.i(TAG, "Network available: transport=$transport, triggering relay reconnect")
+                relayPool.reconnectAll()
+            }
+
+            override fun onLost(network: Network) {
+                Log.i(TAG, "Network lost")
+            }
+        }
+
+        cm.registerNetworkCallback(request, callback)
+        networkCallback = callback
+        Log.d(TAG, "NetworkCallback registered for BT/WiFi/cellular")
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback ?: return
+        try {
+            val cm = getSystemService(ConnectivityManager::class.java)
+            cm?.unregisterNetworkCallback(cb)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unregistering NetworkCallback", e)
+        }
+        networkCallback = null
     }
 
     private fun ensureSubscription() {

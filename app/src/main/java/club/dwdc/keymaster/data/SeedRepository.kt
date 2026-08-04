@@ -7,7 +7,7 @@ import androidx.security.crypto.MasterKey
 
 /**
  * Shared EncryptedSharedPreferences instance for seed and account data.
- * Both SeedRepository and AccountRepository use the same encrypted prefs file.
+ * Shared EncryptedSharedPreferences for seed data.
  */
 internal object SeedPrefs {
     @Volatile

@@ -1,152 +1,190 @@
-# Getting Started with KeyMaster Android
+# Getting Started — Newbie
 
-KeyMaster keeps your private keys on your phone and signs remotely
-for desktop applications. This guide takes you from install to a
-working connection with the desktop Avatar.
+This guide walks you through setting up KeyMaster on your Android
+phone and connecting it to the desktop Avatar.
 
-## 1. Requirements
+## What You Need
 
-- Android 8.0 (Oreo) or later
-- Camera (for scanning QR codes)
-- Network access to the desktop's Nostr relay (USB cable, WiFi,
-  or remote tunnel)
+- An Android phone (Android 10+)
+- A desktop with the KeyMaster Avatar installed
+  ([keymaster-avatar](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar))
+- Network connectivity between phone and desktop (WiFi or
+  Bluetooth PAN)
+- The relay (strfry) running on the desktop
 
-## 2. Install the APK
+## Step 1: Install the App
 
-Pre-built APKs will be available from GitHub Releases in a future
-release. For now, build from source and sideload.
+Install the KeyMaster APK on your phone:
 
 ```bash
-git clone https://github.com/DarkWebDivingClub/club.dwdc.keymaster.android.git
-cd club.dwdc.keymaster.android
-./gradlew assembleDebug
-adb install app/build/outputs/apk/debug/app-debug.apk
+adb install app-debug.apk
 ```
 
-You should see the KeyMaster icon in the app drawer.
+Or build from source (see [getting-started-developer.md](getting-started-developer.md)).
 
-## 3. Set up your seed
+## Step 2: Set Up Your Seed Phrase
 
-Open the app. On first launch you see three options:
+On first launch, the app shows the setup screen. You have three
+options:
 
-**Generate a new seed:**
-1. Tap **Generate New Seed**
-2. The app shows 24 words in a numbered grid
-3. **Write these words down on paper.** If you lose them, you lose
-   all derived keys permanently. There is no recovery.
-4. Optionally enter a passphrase (the "25th word")
-5. Tap **Continue**
+- **Generate New Seed** — creates a fresh 24-word BIP-39 mnemonic.
+  Write it down and store it safely. This is the only way to
+  recover your keys.
+- **Import Seed Phrase** — paste or type an existing 24-word
+  mnemonic.
+- **Scan QR Code** — scan a QR containing a BIP-39 mnemonic.
 
-**Import an existing seed:**
-1. Tap **Import Seed Phrase**
-2. Type or paste your 12 or 24 BIP-39 words
-3. Optionally enter the passphrase
-4. Tap **Continue**
+Optionally set a passphrase ("25th word"). A different passphrase
+produces completely different keys. If you set one, you must
+remember it.
 
-**Scan a seed backup QR:**
-1. Tap **Scan QR Code**
-2. Point the camera at a QR-encoded seed backup
+After storing the seed, the app creates a default identity
+automatically.
 
-After any of these, the app creates a default identity and takes
-you to the home screen.
+## Step 3: Create an Identity
 
-## 4. Create an identity
+If you need additional identities beyond the default:
 
-Each identity has its own Nostr, SSH, and GPG keys, all derived
-from your seed.
-
-1. Swipe right past existing identities to the "+" page
+1. Swipe to the last page on the home screen
 2. Tap **Create New Account**
-3. Enter an identity label, display name, and email
-   (e.g. `alice`, `Alice`, `alice@atlanta.com`)
-4. The new identity appears with its public keys
+3. Enter a name, email, and optionally a custom identity string
+4. The app derives SSH, GPG, and Nostr keys for this identity
 
-## 5. Home screen
+## Step 4: Attach to the Desktop Avatar
 
-The home screen shows one identity at a time. Swipe left/right to
-switch between identities.
+### On the desktop
 
-- **Identity card** — npub (bech32) and hex public key, with copy
-  buttons
-- **Derived Keys card** — SSH (ED25519), GPG (certification +
-  signing), Nostr key
-- **Avatar card** — connection status and Attach/Detach buttons
-
-| Avatar status | Meaning |
-|---------------|---------|
-| Green dot, "Connected" | Attached and working |
-| Amber dot, "Reconnecting..." | Auto-retrying, wait 10-30 seconds |
-| Red dot, "Disconnected" | Manual action needed |
-| "Not connected" | No active session |
-
-- **App Permissions card** — NIP-55 apps that requested signing
-  access
-- **NIP-46 Remote Sessions card** — connected remote Nostr clients
-
-## 6. Connect to the desktop Avatar
-
-Set up the desktop side first — see the
-[Avatar Getting Started](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar/blob/master/getting-started-newbi.md).
-
-### Make the relay reachable
-
-**USB (recommended):** Connect the phone via USB with USB debugging
-enabled. On the desktop:
+The avatar generates a descriptor QR at startup. Find it at:
 
 ```bash
-adb reverse tcp:7777 tcp:7777
+cat /run/keymaster-avatar/descriptor.json
 ```
 
-**Same WiFi:** Configure the Avatar to use the desktop's LAN IP.
-See the Avatar guide for details.
-
-**Traveling:** If you cannot use USB, forward port 7777 through
-an SSH tunnel to a server the phone can reach. See the
-"Traveling" section in the Avatar guide.
-
-### Scan the QR code
-
-1. On the desktop:
+Display the QR using any QR tool, or show it in a terminal:
 
 ```bash
 qrencode -t UTF8 < /run/keymaster-avatar/descriptor.json
 ```
 
-2. On the phone, tap **Attach to Avatar** on the Avatar card
-3. Point the camera at the QR code
-4. Select your identity (e.g. `alice@atlanta.com`)
-5. Tap **Attach**
+### On the phone
 
-You should see a green dot and "Connected". The notification bar
-shows "Attached to relay".
+1. Open the account you want to attach
+2. Tap **Attach to Avatar**
+3. Scan the QR code (or tap **Paste JSON instead** to paste the
+   descriptor manually)
+4. Confirm the relay URL and select the identity
+5. If you have multiple identities, check **Also attach** for
+   additional ones
+6. Tap **Attach**
 
-On the desktop, verify: `ssh-add -l` should list your key.
+The notification bar shows "Attached to ws://..." when connected.
+SSH, GPG, and Nostr keys from the phone are now available on the
+desktop.
 
-## 7. Using NIP-55 (local Nostr signing)
+### Verify on the desktop
 
-NIP-55 lets Nostr apps on the phone use KeyMaster for signing.
+```bash
+# SSH keys
+SSH_AUTH_SOCK=/run/user/$(id -u)/keymaster-ssh-agent.sock ssh-add -l
 
-1. Open a NIP-55-compatible Nostr app
-2. Choose "Login with Signer" or "External Signer"
-3. Select KeyMaster from the signer picker
-4. Tap **Allow** on the first permission dialog
-5. Manage permissions from the App Permissions card
+# GPG signing
+GNUPGHOME=/run/user/$(id -u)/gnupg-keymaster gpg --clearsign <<< "test"
+```
 
-## 8. Using NIP-46 (remote Nostr signing)
+## Step 5: Daily Use
 
-NIP-46 lets remote Nostr clients request signatures from the phone.
+### After laptop sleep/wake
 
-1. In the remote client, choose NIP-46 login — it shows a QR code
-2. On the phone, tap **Connect New Client** on the NIP-46 card
-3. Scan the `nostrconnect://` QR code
-4. The session appears in the list. Tap **Disconnect** when done.
+When the laptop wakes from sleep, BT PAN drops and the relay
+connection dies. The phone shows a "Bluetooth connection lost"
+notification. To recover:
+
+1. On the phone, open Bluetooth settings (tap the notification or
+   the in-app dialog)
+2. Toggle **Internet access** off then on for the paired laptop
+3. The app auto-reconnects — no QR scan needed
+
+### After phone reboot
+
+The foreground service restores the session automatically
+(`START_STICKY`). If the relay is reachable, the app reconnects
+without intervention.
+
+### After app force-stop
+
+You need to re-attach by opening the app and scanning the QR
+again.
+
+## Connectivity
+
+The phone connects to the desktop relay over Bluetooth PAN — a
+dedicated BT link independent of WiFi.
+
+```
+Phone (10.44.0.3) --BT PAN--> Laptop (10.44.0.1) --> strfry :7777
+Laptop WiFi                --> internet
+```
+
+### Prerequisites
+
+- Phone and laptop paired via Bluetooth
+- Laptop running bt-nap service (NAP server on `bt-nap-br` bridge)
+- strfry relay listening on the BT PAN interface
+
+### Establishing BT PAN
+
+From the phone: BT settings → paired laptop → tap **CONNECT**.
+The phone gets an IP via DHCP (e.g. 10.44.0.3). Verify from the
+laptop:
+
+```bash
+ping 10.44.0.3
+```
+
+### BT PAN troubleshooting
+
+See [Advanced BT Troubleshooting](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar/blob/master/doc/advanced-bt-troubleshooting.md)
+for common pitfalls — interface naming, connection direction,
+stale PAN state, and sleep/wake recovery.
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| Camera permission denied | Settings > Apps > KeyMaster > Permissions > Camera |
-| "Reconnecting..." stays amber | USB: re-run `adb reverse tcp:7777 tcp:7777`. WiFi: check IP and firewall. |
-| Attach fails or times out | Check relay: `sudo systemctl status strfry` on desktop |
-| No keys after seed import | Re-import the seed from the setup screen |
-| Connection drops after sleep | Auto-reconnects in 10-30s. If not, see the [Reconnect Guide](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar/blob/master/doc/RECONNECT.md). |
+### "Attach failed: Connection to relay timed out"
+
+The phone can't reach the relay. Check:
+- Is the relay running? `systemctl status strfry`
+- Can the phone reach the relay IP? Ping from phone:
+  `adb shell ping <relay-ip>`
+- Is BT PAN up? `ip link show master bt-nap-br` on the laptop
+
+### SSH/GPG not working after sleep/wake
+
+Check the phone logs:
+
+```bash
+adb logcat -s AvatarService
+```
+
+If you see "Network available: transport=BLUETOOTH" followed by
+"Re-attached", the phone side is fine. Check the desktop:
+
+```bash
+# Avatar relay connection
+journalctl --user -u km-avatar --since "5 minutes ago"
+
+# SSH service avatar
+journalctl --user -u km-ssh-sa --since "5 minutes ago"
+```
+
+### Phone shows "Reconnect failed"
+
+The app tried 5 times to reconnect and gave up. The relay was
+unreachable during all attempts. Re-establish network connectivity
+and re-attach manually (open app → Attach to Avatar → scan QR).
+
+### BT PAN up but can't ping
+
+See [Advanced BT Troubleshooting](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar/blob/master/doc/advanced-bt-troubleshooting.md)
+— common causes: stale PAN state (clean BT cycle needed), wrong
+BNEP interface name (check `ip link show master bt-nap-br`),
+or ARP not resolving (restart bt-nap service).
