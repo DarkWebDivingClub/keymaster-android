@@ -506,10 +506,10 @@ private fun AccountPage(
     if (btReconnectPrompt && !btDialogDismissed) {
         AlertDialog(
             onDismissRequest = { btDialogDismissed = true },
-            title = { Text("Bluetooth disconnected") },
+            title = { Text("Bluetooth connection lost") },
             text = {
-                Text("Open Bluetooth settings and toggle Internet access on " +
-                     "your laptop to restore the connection.")
+                Text("Open Bluetooth settings and turn Internet access off " +
+                     "then on for the paired laptop.")
             },
             confirmButton = {
                 Button(

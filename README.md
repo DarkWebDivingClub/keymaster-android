@@ -1,32 +1,28 @@
-# club.dwdc.keymaster.android
+# KeyMaster Android
 
-Android KeyMaster app for DWDC.
+KeyMaster is a cryptographic key management app that keeps your
+private keys on your phone. It stores a BIP-39 seed phrase, derives
+SSH, GPG, and Nostr keys from it, and signs remotely for desktop
+applications through a Nostr relay. Your keys never leave the phone.
 
-This project was extracted from the existing `ae.redtoken.iz.keymaster.android` app and renamed to:
+The app supports three signing modes:
 
-- Android namespace/application id: `club.dwdc.keymaster`
-- Kotlin package root: `club.dwdc.keymaster`
-- KeyVault dependency: `club.dwdc:club.dwdc.keyvault.nostr:0.1.0`
+- **Avatar** — connect to a desktop Avatar so that SSH, GPG, and
+  Nostr clients on the desktop use the phone's keys
+- **NIP-55** — sign locally for other Nostr apps on the same phone
+- **NIP-46** — sign remotely for Nostr clients on other devices
 
-## Requirements
+## Getting Started
 
-- JDK 21
-- Android SDK 35
-
-The repository includes a `.java-version` file for version managers such as
-`jenv`, `asdf`, and `mise`. Set `JAVA_HOME` to a JDK 21 installation when your
-environment does not use one of these tools.
-
-## Build
-
-```sh
-./gradlew test assembleDebug
-```
-
-Gradle and Kotlin use a JDK 21 toolchain. Android Java and Kotlin bytecode remain
-targeted at Java 17 for device compatibility.
+- **[Getting Started — Newbie](getting-started-newbi.md)** —
+  Install the app, set up your seed, create an identity, and
+  connect to the desktop. Start here.
+- **[Getting Started — Developer](getting-started-developer.md)** —
+  Build from source, project structure, dependencies.
+- **[KeyMaster Avatar](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar)** —
+  The desktop side (needed for SSH/GPG/Nostr bridging).
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 only
-(`GPL-3.0-only`). See [LICENSE](LICENSE).
+This project is licensed under the GNU General Public License v3.0
+only (`GPL-3.0-only`). See [LICENSE](LICENSE).

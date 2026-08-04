@@ -292,7 +292,20 @@ class AvatarService : Service() {
             }
 
             override fun onLost(network: Network) {
-                Log.i(TAG, "Network lost")
+                val caps = cm.getNetworkCapabilities(network)
+                val transport = when {
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) == true -> "BLUETOOTH"
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WIFI"
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "CELLULAR"
+                    else -> "UNKNOWN"
+                }
+                Log.i(TAG, "Network lost: transport=$transport")
+
+                if (sessionRepo.getSession() != null) {
+                    Log.i(TAG, "Active session exists, prompting BT reconnect")
+                    postBtReconnectNotification()
+                    _showBtReconnectPrompt.value = true
+                }
             }
         }
 
@@ -332,8 +345,6 @@ class AvatarService : Service() {
             }
             Log.e(TAG, "All re-attach attempts failed for ${session.relayUrl}")
             updateNotification("Reconnect failed")
-            postBtReconnectNotification()
-            _showBtReconnectPrompt.value = true
         } finally {
             reconnecting.set(false)
         }
@@ -402,8 +413,8 @@ class AvatarService : Service() {
         )
 
         val notification = Notification.Builder(this, BT_RECONNECT_CHANNEL_ID)
-            .setContentTitle("Bluetooth disconnected")
-            .setContentText("Tap to open Bluetooth settings and reconnect")
+            .setContentTitle("Bluetooth connection lost")
+            .setContentText("Toggle Internet access in Bluetooth settings to reconnect")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
