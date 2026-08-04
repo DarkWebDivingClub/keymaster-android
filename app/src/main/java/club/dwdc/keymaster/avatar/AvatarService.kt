@@ -7,6 +7,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.os.VibrationEffect
@@ -41,6 +45,7 @@ class AvatarService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var previousConnectionState: NostrTransport.ConnectionState =
         NostrTransport.ConnectionState.DISCONNECTED
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -48,6 +53,8 @@ class AvatarService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
         sessionRepo = AvatarSessionRepository(this)
+        _avatarSession.value = sessionRepo.getSession()
+        registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -70,6 +77,7 @@ class AvatarService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "Service destroyed")
+        unregisterNetworkCallback()
         cleanupController()
         serviceScope.cancel()
         super.onDestroy()
@@ -120,6 +128,7 @@ class AvatarService : Service() {
                     additionalIdentities = additionalIdentities
                 )
                 sessionRepo.saveSession(session)
+                _avatarSession.value = session
                 updateNotification("Attached to ${descriptor.relay()}")
                 Log.d(TAG, "Attached to ${descriptor.relay()}, identity=$identity, " +
                     "additional=$additionalIdentities, id=$attachId")
@@ -137,6 +146,7 @@ class AvatarService : Service() {
         serviceScope.launch {
             cleanupController()
             sessionRepo.clearSession()
+            _avatarSession.value = null
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             Log.d(TAG, "Detached")
@@ -156,25 +166,7 @@ class AvatarService : Service() {
 
         serviceScope.launch {
             try {
-                val controller = KeyMasterProvider.getController(this@AvatarService)
-                    ?: throw IllegalStateException("No seed available")
-
-                controller.setApprovalHandler { _, _ -> true }
-                registerConnectionStateListener(controller)
-
-                val descriptor = AvatarDescriptor.fromJson(session.descriptorJson)
-                val attachId = if (session.additionalIdentities.isEmpty()) {
-                    controller.attach(descriptor, session.identity)
-                } else {
-                    val predicates = buildKeyPredicates(
-                        session.identity, session.additionalIdentities
-                    )
-                    controller.attach(descriptor, session.identity, predicates)
-                }
-
-                // Update session with new attach ID
-                sessionRepo.saveSession(session.copy(sessionId = attachId))
-                updateNotification("Attached to ${session.relayUrl}")
+                doAttachSession(session)
                 Log.d(TAG, "Restored session to ${session.relayUrl}")
             } catch (e: Exception) {
                 Log.e(TAG, "Restore failed", e)
@@ -183,6 +175,33 @@ class AvatarService : Service() {
                 stopSelf()
             }
         }
+    }
+
+    /**
+     * Core attach logic shared by restoreSession and network-triggered reconnect.
+     * Gets the controller, sets up listeners, attaches, and persists the updated session.
+     */
+    private fun doAttachSession(session: AvatarSession) {
+        val controller = KeyMasterProvider.getController(this@AvatarService)
+            ?: throw IllegalStateException("No seed available")
+
+        controller.setApprovalHandler { _, _ -> true }
+        registerConnectionStateListener(controller)
+
+        val descriptor = AvatarDescriptor.fromJson(session.descriptorJson)
+        val attachId = if (session.additionalIdentities.isEmpty()) {
+            controller.attach(descriptor, session.identity)
+        } else {
+            val predicates = buildKeyPredicates(
+                session.identity, session.additionalIdentities
+            )
+            controller.attach(descriptor, session.identity, predicates)
+        }
+
+        val restoredSession = session.copy(sessionId = attachId)
+        sessionRepo.saveSession(restoredSession)
+        _avatarSession.value = restoredSession
+        updateNotification("Attached to ${session.relayUrl}")
     }
 
     private fun buildKeyPredicates(
@@ -240,6 +259,77 @@ class AvatarService : Service() {
         }
     }
 
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_BLUETOOTH)
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            .build()
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val caps = cm.getNetworkCapabilities(network)
+                val transport = when {
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) == true -> "BLUETOOTH"
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WIFI"
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "CELLULAR"
+                    else -> "UNKNOWN"
+                }
+                Log.i(TAG, "Network available: transport=$transport")
+
+                if (_connectionState.value != NostrTransport.ConnectionState.CONNECTED) {
+                    val session = sessionRepo.getSession()
+                    if (session != null) {
+                        Log.i(TAG, "Connection is down, triggering re-attach " +
+                            "after $transport network restored")
+                        serviceScope.launch { reconnectAfterNetworkRestore(session) }
+                    }
+                }
+            }
+
+            override fun onLost(network: Network) {
+                Log.i(TAG, "Network lost")
+            }
+        }
+
+        cm.registerNetworkCallback(request, callback)
+        networkCallback = callback
+        Log.d(TAG, "NetworkCallback registered for BT/WiFi/cellular")
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback ?: return
+        try {
+            val cm = getSystemService(ConnectivityManager::class.java)
+            cm?.unregisterNetworkCallback(cb)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unregistering NetworkCallback", e)
+        }
+        networkCallback = null
+    }
+
+    private fun reconnectAfterNetworkRestore(session: AvatarSession) {
+        val delays = longArrayOf(0, 3000, 5000, 10000, 20000)
+        for ((attempt, delay) in delays.withIndex()) {
+            if (delay > 0) {
+                Log.i(TAG, "Retry ${attempt + 1}/${delays.size} in ${delay}ms...")
+                Thread.sleep(delay)
+            }
+            try {
+                cleanupController()
+                doAttachSession(session)
+                Log.i(TAG, "Re-attached to ${session.relayUrl} after network restore" +
+                    if (attempt > 0) " (attempt ${attempt + 1})" else "")
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "Re-attach attempt ${attempt + 1}/${delays.size} failed: ${e.message}")
+            }
+        }
+        Log.e(TAG, "All re-attach attempts failed for ${session.relayUrl}")
+        updateNotification("Reconnect failed")
+    }
+
     private fun cleanupController() {
         try {
             KeyMasterProvider.getController(this)?.detach()
@@ -247,6 +337,7 @@ class AvatarService : Service() {
             Log.w(TAG, "Error during detach cleanup", e)
         }
         _connectionState.value = NostrTransport.ConnectionState.DISCONNECTED
+        _avatarSession.value = null
     }
 
     private fun createNotificationChannel() {
@@ -299,6 +390,9 @@ class AvatarService : Service() {
 
         private val _connectionState = MutableStateFlow(NostrTransport.ConnectionState.DISCONNECTED)
         val connectionState: StateFlow<NostrTransport.ConnectionState> = _connectionState
+
+        private val _avatarSession = MutableStateFlow<AvatarSession?>(null)
+        val avatarSession: StateFlow<AvatarSession?> = _avatarSession
 
         fun startAttach(
             context: Context,
