@@ -5,8 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothDevice
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -40,6 +43,10 @@ import kotlinx.coroutines.launch
 /**
  * Foreground service that keeps the Avatar relay connection alive.
  * Handles attach/detach lifecycle for NipxxConnector via KeyMasterController.
+ *
+ * Supports two transport modes:
+ * - WebSocket (PAN): reconnects via ConnectivityManager.NetworkCallback
+ * - RFCOMM: reconnects on connection state DISCONNECTED and ACL_CONNECTED broadcast
  */
 class AvatarService : Service() {
 
@@ -48,7 +55,9 @@ class AvatarService : Service() {
     private var previousConnectionState: NostrTransport.ConnectionState =
         NostrTransport.ConnectionState.DISCONNECTED
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var aclReceiver: BroadcastReceiver? = null
     private val reconnecting = AtomicBoolean(false)
+    private var rfcommMode = false
 
     override fun onCreate() {
         super.onCreate()
@@ -57,7 +66,6 @@ class AvatarService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
         sessionRepo = AvatarSessionRepository(this)
         _avatarSession.value = sessionRepo.getSession()
-        registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -80,7 +88,7 @@ class AvatarService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "Service destroyed")
-        unregisterNetworkCallback()
+        unregisterReconnectListeners()
         cleanupController()
         serviceScope.cancel()
         super.onDestroy()
@@ -104,7 +112,11 @@ class AvatarService : Service() {
             return
         }
 
-        updateNotification("Connecting to ${descriptor.relay()}...")
+        rfcommMode = descriptor.isRfcomm
+        registerReconnectListeners()
+
+        val target = if (rfcommMode) "RFCOMM ${descriptor.btAddr()}" else descriptor.relay()
+        updateNotification("Connecting to $target...")
 
         serviceScope.launch {
             try {
@@ -132,9 +144,9 @@ class AvatarService : Service() {
                 )
                 sessionRepo.saveSession(session)
                 _avatarSession.value = session
-                updateNotification("Attached to ${descriptor.relay()}")
-                Log.d(TAG, "Attached to ${descriptor.relay()}, identity=$identity, " +
-                    "additional=$additionalIdentities, id=$attachId")
+                updateNotification("Attached via ${if (rfcommMode) "RFCOMM" else descriptor.relay()}")
+                Log.d(TAG, "Attached via ${if (rfcommMode) "RFCOMM" else descriptor.relay()}, " +
+                    "identity=$identity, additional=$additionalIdentities, id=$attachId")
             } catch (e: Exception) {
                 Log.e(TAG, "Attach failed", e)
                 updateNotification("Attach failed: ${e.message}")
@@ -164,13 +176,27 @@ class AvatarService : Service() {
             return
         }
 
-        Log.d(TAG, "Restoring session: relay=${session.relayUrl}, identity=${session.identity}")
-        updateNotification("Reconnecting to ${session.relayUrl}...")
+        val descriptor = try {
+            AvatarDescriptor.fromJson(session.descriptorJson)
+        } catch (e: Exception) {
+            Log.e(TAG, "Invalid stored descriptor", e)
+            sessionRepo.clearSession()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        rfcommMode = descriptor.isRfcomm
+        registerReconnectListeners()
+
+        val target = if (rfcommMode) "RFCOMM" else session.relayUrl
+        Log.d(TAG, "Restoring session: $target, identity=${session.identity}")
+        updateNotification("Reconnecting to $target...")
 
         serviceScope.launch {
             try {
                 doAttachSession(session)
-                Log.d(TAG, "Restored session to ${session.relayUrl}")
+                Log.d(TAG, "Restored session to $target")
             } catch (e: Exception) {
                 Log.e(TAG, "Restore failed", e)
                 sessionRepo.clearSession()
@@ -181,8 +207,7 @@ class AvatarService : Service() {
     }
 
     /**
-     * Core attach logic shared by restoreSession and network-triggered reconnect.
-     * Gets the controller, sets up listeners, attaches, and persists the updated session.
+     * Core attach logic shared by restoreSession and reconnect.
      */
     private fun doAttachSession(session: AvatarSession) {
         val controller = KeyMasterProvider.getController(this@AvatarService)
@@ -204,7 +229,7 @@ class AvatarService : Service() {
         val restoredSession = session.copy(sessionId = attachId)
         sessionRepo.saveSession(restoredSession)
         _avatarSession.value = restoredSession
-        updateNotification("Attached to ${session.relayUrl}")
+        updateNotification("Attached via ${if (rfcommMode) "RFCOMM" else session.relayUrl}")
     }
 
     private fun buildKeyPredicates(
@@ -222,11 +247,10 @@ class AvatarService : Service() {
             Log.d(TAG, "Connection state: $state")
             _connectionState.value = state
 
-            // Update notification based on state
             val text = when (state) {
                 NostrTransport.ConnectionState.CONNECTED -> {
                     val session = sessionRepo.getSession()
-                    "Attached to ${session?.relayUrl ?: "relay"}"
+                    "Attached via ${if (rfcommMode) "RFCOMM" else (session?.relayUrl ?: "relay")}"
                 }
                 NostrTransport.ConnectionState.RETRYING -> "Reconnecting..."
                 NostrTransport.ConnectionState.DISCONNECTED -> "Disconnected"
@@ -239,6 +263,16 @@ class AvatarService : Service() {
             ) {
                 vibrate(200)
             }
+
+            // RFCOMM: trigger reconnect when connection drops
+            if (rfcommMode && state == NostrTransport.ConnectionState.DISCONNECTED) {
+                val session = sessionRepo.getSession()
+                if (session != null && reconnecting.compareAndSet(false, true)) {
+                    Log.i(TAG, "RFCOMM disconnected, triggering reconnect")
+                    serviceScope.launch { reconnectWithBackoff(session) }
+                }
+            }
+
             previousConnectionState = state
         }
     }
@@ -260,6 +294,22 @@ class AvatarService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "Vibration failed", e)
         }
+    }
+
+    // --- Reconnect listeners ---
+
+    private fun registerReconnectListeners() {
+        unregisterReconnectListeners()
+        if (rfcommMode) {
+            registerAclReceiver()
+        } else {
+            registerNetworkCallback()
+        }
+    }
+
+    private fun unregisterReconnectListeners() {
+        unregisterNetworkCallback()
+        unregisterAclReceiver()
     }
 
     private fun registerNetworkCallback() {
@@ -286,7 +336,7 @@ class AvatarService : Service() {
                     if (session != null && reconnecting.compareAndSet(false, true)) {
                         Log.i(TAG, "Connection is down, triggering re-attach " +
                             "after $transport network restored")
-                        serviceScope.launch { reconnectAfterNetworkRestore(session) }
+                        serviceScope.launch { reconnectWithBackoff(session) }
                     }
                 }
             }
@@ -325,7 +375,48 @@ class AvatarService : Service() {
         networkCallback = null
     }
 
-    private fun reconnectAfterNetworkRestore(session: AvatarSession) {
+    @Suppress("MissingPermission")
+    private fun registerAclReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED) return
+                val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                val session = sessionRepo.getSession() ?: return
+                val descriptor = try {
+                    AvatarDescriptor.fromJson(session.descriptorJson)
+                } catch (_: Exception) { return }
+
+                val deviceAddr = device?.address
+                if (deviceAddr != null && deviceAddr.equals(descriptor.btAddr(), ignoreCase = true)) {
+                    Log.i(TAG, "ACL connected to avatar BT device $deviceAddr")
+                    if (_connectionState.value != NostrTransport.ConnectionState.CONNECTED &&
+                        reconnecting.compareAndSet(false, true)
+                    ) {
+                        Log.i(TAG, "Triggering RFCOMM reconnect after ACL restore")
+                        serviceScope.launch { reconnectWithBackoff(session) }
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED)
+        registerReceiver(receiver, filter)
+        aclReceiver = receiver
+        Log.d(TAG, "ACL_CONNECTED receiver registered for RFCOMM reconnect")
+    }
+
+    private fun unregisterAclReceiver() {
+        val receiver = aclReceiver ?: return
+        try {
+            unregisterReceiver(receiver)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unregistering ACL receiver", e)
+        }
+        aclReceiver = null
+    }
+
+    // --- Reconnect with backoff ---
+
+    private fun reconnectWithBackoff(session: AvatarSession) {
         try {
             val delays = longArrayOf(0, 3000, 5000, 10000, 20000)
             for ((attempt, delay) in delays.withIndex()) {
@@ -335,7 +426,8 @@ class AvatarService : Service() {
                 }
                 try {
                     doAttachSession(session)
-                    Log.i(TAG, "Re-attached to ${session.relayUrl} after network restore" +
+                    val mode = if (rfcommMode) "RFCOMM" else session.relayUrl
+                    Log.i(TAG, "Re-attached to $mode" +
                         if (attempt > 0) " (attempt ${attempt + 1})" else "")
                     cancelBtReconnectNotification()
                     return
@@ -343,7 +435,7 @@ class AvatarService : Service() {
                     Log.w(TAG, "Re-attach attempt ${attempt + 1}/${delays.size} failed: ${e.message}")
                 }
             }
-            Log.e(TAG, "All re-attach attempts failed for ${session.relayUrl}")
+            Log.e(TAG, "All re-attach attempts failed")
             updateNotification("Reconnect failed")
         } finally {
             reconnecting.set(false)
