@@ -6,6 +6,8 @@ import club.dwdc.keymaster.KVMetaStore
 import club.dwdc.keymaster.KeyMaster
 import club.dwdc.keymaster.KeyMasterController
 import club.dwdc.keymaster.NostrKeyEntry
+import club.dwdc.keymaster.NostrRelayClient
+import club.dwdc.keymaster.rfcomm.RfcommRelayClient
 import club.dwdc.keyvault.core.Bip32KeyVault
 
 /**
@@ -32,7 +34,15 @@ object KeyMasterProvider {
             val vault = Bip32KeyVault(mnemonic, passphrase)
             val store = getMetaStore(context)
             val km = KeyMaster(vault, store)
-            return KeyMasterController(km).also { controller = it }
+            return KeyMasterController(km).apply {
+                setRelayClientFactory { descriptor ->
+                    if (descriptor.isRfcomm) {
+                        RfcommRelayClient(descriptor.btAddr(), descriptor.rfcommChannel())
+                    } else {
+                        NostrRelayClient(descriptor.relay())
+                    }
+                }
+            }.also { controller = it }
         }
     }
 
@@ -49,6 +59,28 @@ object KeyMasterProvider {
         synchronized(this) {
             controller = null
             metaStore = null
+        }
+    }
+
+    /**
+     * Re-derive keys for all existing identities from the current seed.
+     *
+     * Preserves GPG name/email/creationTime from the certification role entry
+     * so identity metadata survives seed changes.
+     */
+    fun reDeriveAllIdentities(context: Context) {
+        val store = getMetaStore(context)
+        val controller = getController(context) ?: return
+        for (identity in store.identities()) {
+            val gpgEntries = store.byIdentity(identity)
+                .filterIsInstance<GPGKeyEntry>()
+            val cert = gpgEntries.firstOrNull { it.role() == 0 }
+            controller.createIdentity(
+                identity,
+                cert?.name() ?: identity,
+                cert?.email() ?: identity,
+                cert?.creationTime() ?: java.time.Instant.now().epochSecond
+            )
         }
     }
 
