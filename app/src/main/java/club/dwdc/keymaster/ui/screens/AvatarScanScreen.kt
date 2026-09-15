@@ -1,6 +1,7 @@
 package club.dwdc.keymaster.ui.screens
 
 import android.Manifest
+import android.os.Build
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -39,14 +40,19 @@ fun AvatarScanScreen(
     var scanned by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasPermission = granted
-        permissionDenied = !granted
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val cameraGranted = results[Manifest.permission.CAMERA] == true
+        hasPermission = cameraGranted
+        permissionDenied = !cameraGranted
     }
 
     LaunchedEffect(Unit) {
-        permissionLauncher.launch(Manifest.permission.CAMERA)
+        val perms = mutableListOf(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        permissionLauncher.launch(perms.toTypedArray())
     }
 
     val handleJson: (String) -> Unit = { rawJson ->
@@ -88,7 +94,11 @@ fun AvatarScanScreen(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(onClick = {
-                    permissionLauncher.launch(Manifest.permission.CAMERA)
+                    val perms = mutableListOf(Manifest.permission.CAMERA)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                    }
+                    permissionLauncher.launch(perms.toTypedArray())
                 }) {
                     Text("Grant Permission")
                 }
