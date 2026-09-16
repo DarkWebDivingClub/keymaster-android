@@ -16,8 +16,8 @@ android {
         applicationId = "club.dwdc.keymaster"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     compileOptions {
@@ -83,6 +83,9 @@ dependencies {
 
     // Security - encrypted storage
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // SLF4J binding — routes core library logging to System.err → logcat
+    implementation("org.slf4j:slf4j-simple:2.0.9")
 
     // JSON
     implementation("com.google.code.gson:gson:2.11.0")
