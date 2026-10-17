@@ -21,7 +21,6 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.util.Log
-import club.dwdc.keymaster.AbstractKeyEntry
 import club.dwdc.keymaster.AvatarDescriptor
 import club.dwdc.keymaster.KeyMasterController
 import club.dwdc.keymaster.NostrTransport
@@ -31,7 +30,6 @@ import club.dwdc.keymaster.data.AvatarSessionRepository
 import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.ui.MainActivity
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.function.Predicate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -127,12 +125,7 @@ class AvatarService : Service() {
                 controller.setApprovalHandler { _, _ -> true }
                 registerConnectionStateListener(controller)
 
-                val attachId = if (additionalIdentities.isEmpty()) {
-                    controller.attach(descriptor, identity)
-                } else {
-                    val predicates = buildKeyPredicates(identity, additionalIdentities)
-                    controller.attach(descriptor, identity, predicates)
-                }
+                val attachId = controller.attach(descriptor, identity, additionalIdentities)
 
                 val session = AvatarSession(
                     descriptorJson = descriptorJson,
@@ -217,29 +210,14 @@ class AvatarService : Service() {
         registerConnectionStateListener(controller)
 
         val descriptor = AvatarDescriptor.fromJson(session.descriptorJson)
-        val attachId = if (session.additionalIdentities.isEmpty()) {
-            controller.attach(descriptor, session.identity)
-        } else {
-            val predicates = buildKeyPredicates(
-                session.identity, session.additionalIdentities
-            )
-            controller.attach(descriptor, session.identity, predicates)
-        }
+        val attachId = controller.attach(
+            descriptor, session.identity, session.additionalIdentities
+        )
 
         val restoredSession = session.copy(sessionId = attachId)
         sessionRepo.saveSession(restoredSession)
         _avatarSession.value = restoredSession
         updateNotification("Attached via ${if (rfcommMode) "RFCOMM" else session.relayUrl}")
-    }
-
-    private fun buildKeyPredicates(
-        identity: String,
-        additionalIdentities: List<String>
-    ): List<Predicate<AbstractKeyEntry>> {
-        val allIdentities = listOf(identity) + additionalIdentities
-        return allIdentities.map { id ->
-            Predicate<AbstractKeyEntry> { entry -> entry.identity() == id }
-        }
     }
 
     private fun registerConnectionStateListener(controller: KeyMasterController) {
