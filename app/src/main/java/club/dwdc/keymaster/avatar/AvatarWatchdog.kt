@@ -75,9 +75,11 @@ object AvatarWatchdog {
                 return
             }
             if (AvatarService.running) {
-                // Alive: its own backoff owns reconnection, and a restore here
-                // would race it.
-                Log.d(TAG, "Service alive; nothing to do")
+                // Alive, but a connector can still be down with its backoff
+                // settled into the slow interval — nudge it rather than
+                // restoring, which would rebuild realms that are working.
+                Log.d(TAG, "Service alive; nudging any connector that is down")
+                AvatarService.reconnect(context)
                 return
             }
             Log.w(TAG, "Session persisted but service is gone — restoring")

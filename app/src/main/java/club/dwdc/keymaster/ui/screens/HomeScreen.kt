@@ -669,9 +669,14 @@ private fun AvatarsCard(
                             }
                         )
                     }
+                    // Two avatars on one desktop share its Bluetooth name;
+                    // show what tells them apart only when it is needed.
+                    val ambiguous = realm.connectors.groupBy { it.label }
+                        .filterValues { it.size > 1 }.keys
                     realm.connectors.forEach { connector ->
                         ConnectorRow(
                             connector = connector,
+                            disambiguate = connector.label in ambiguous,
                             onDetach = { onDetachConnector(realm.id, connector.id) }
                         )
                     }
@@ -751,7 +756,11 @@ private fun RealmHeading(
 
 /** One avatar: state dot, label, transport badge, eject — and backoff when failing. */
 @Composable
-private fun ConnectorRow(connector: ConnectorUi, onDetach: () -> Unit) {
+private fun ConnectorRow(
+    connector: ConnectorUi,
+    disambiguate: Boolean = false,
+    onDetach: () -> Unit
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -767,7 +776,8 @@ private fun ConnectorRow(connector: ConnectorUi, onDetach: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = connector.label,
+                text = if (disambiguate && connector.detail.isNotBlank())
+                    "${connector.label} · ${connector.detail}" else connector.label,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f)
             )
@@ -800,12 +810,12 @@ private fun stateColor(state: NostrTransport.ConnectionState): Color = when (sta
 }
 
 private fun subLine(connector: ConnectorUi): String {
-    val attempt = connector.retryAttempt
+    val attempt = connector.retryAttempt ?: return connector.state.describe()
     val total = connector.retryTotal
-    if (attempt != null && total != null) {
-        return "Reconnecting · attempt $attempt of $total"
-    }
-    return connector.state.describe()
+    // Past the fast attempts there is no total to count towards: it retries
+    // for as long as the avatar is still wanted.
+    return if (total != null) "Reconnecting · attempt $attempt of $total"
+    else "Reconnecting · attempt $attempt, retrying every 60s"
 }
 
 /** "none", "1 connected", or "1 of 2" while one is down. */
