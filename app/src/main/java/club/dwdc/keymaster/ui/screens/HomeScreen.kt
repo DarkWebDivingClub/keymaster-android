@@ -800,10 +800,10 @@ private fun stateColor(state: NostrTransport.ConnectionState): Color = when (sta
 }
 
 private fun subLine(connector: ConnectorUi): String {
-    val since = connector.retryingSince
-    if (connector.state == NostrTransport.ConnectionState.RETRYING && since != null) {
-        val seconds = ((System.currentTimeMillis() - since) / 1000).coerceAtLeast(0)
-        return "Reconnecting · retrying for ${seconds}s"
+    val attempt = connector.retryAttempt
+    val total = connector.retryTotal
+    if (attempt != null && total != null) {
+        return "Reconnecting · attempt $attempt of $total"
     }
     return connector.state.describe()
 }

@@ -170,7 +170,11 @@ class AvatarService : Service() {
                     "identity=$identity additional=$additionalIdentities")
             } catch (e: Exception) {
                 Log.e(TAG, "Attach failed", e)
-                updateNotification("Attach failed: ${e.message}")
+                val duplicate = e.message?.contains("already has a connector") == true
+                updateNotification(
+                    if (duplicate) "$label is already attached to this realm"
+                    else "Attach failed: ${e.message}"
+                )
                 // Deliberately not clearing the store: a failed attach is not
                 // a reason to forget realms that were already working.
                 stopIfIdle()
@@ -432,7 +436,11 @@ class AvatarService : Service() {
                     if (it.id == connectorId) it.copy(
                         state = state,
                         retryingSince = if (state == NostrTransport.ConnectionState.RETRYING)
-                            it.retryingSince ?: System.currentTimeMillis() else null
+                            it.retryingSince ?: System.currentTimeMillis() else null,
+                        retryAttempt = if (state == NostrTransport.ConnectionState.CONNECTED)
+                            null else it.retryAttempt,
+                        retryTotal = if (state == NostrTransport.ConnectionState.CONNECTED)
+                            null else it.retryTotal
                     ) else it
                 }
             )
@@ -460,6 +468,19 @@ class AvatarService : Service() {
         }
     }
 
+    /** Show the backoff on the row that is failing, and nowhere else. */
+    private fun noteRetry(realmId: Int, connectorId: Int, attempt: Int, total: Int) {
+        _realms.value = _realms.value.map { realm ->
+            if (realm.id != realmId) realm else realm.copy(
+                connectors = realm.connectors.map {
+                    if (it.id == connectorId) it.copy(retryAttempt = attempt, retryTotal = total)
+                    else it
+                }
+            )
+        }
+        updateNotification(notificationText())
+    }
+
     private fun guard(connectorId: Int): AtomicBoolean =
         reconnecting.computeIfAbsent(connectorId) { AtomicBoolean(false) }
 
@@ -480,6 +501,7 @@ class AvatarService : Service() {
         try {
             val delays = longArrayOf(0, 3000, 5000, 10000, 20000)
             for ((attempt, delay) in delays.withIndex()) {
+                noteRetry(realmId, connectorId, attempt + 1, delays.size)
                 if (delay > 0) {
                     Log.i(TAG, "Connector $connectorId retry ${attempt + 1}/${delays.size} " +
                         "in ${delay}ms")
@@ -719,16 +741,23 @@ class AvatarService : Service() {
         val connected = connectors.count {
             it.state == NostrTransport.ConnectionState.CONNECTED
         }
-        val head = when {
-            realms.size > 1 -> "$connected/${connectors.size} avatars in ${realms.size} realms"
-            connectors.size == 1 -> connectors.first().let { "${it.label}: ${it.state.describe()}" }
-            else -> "$connected/${connectors.size} avatars attached"
+        // One avatar in one realm reads as it always did; anything plural
+        // counts first and then lists one line per realm.
+        if (realms.size == 1 && connectors.size == 1) {
+            return connectors.first().let { "${it.label}: ${it.state.describe()}" }
         }
-        if (realms.size == 1 && connectors.size <= 1) return head
-        val detail = realms.joinToString(" · ") { realm ->
-            realm.connectors.joinToString(", ") { "${it.label} ${it.state.symbol()}" }
+        val head = if (realms.size > 1) {
+            "$connected/${connectors.size} avatars in ${realms.size} realms"
+        } else {
+            "$connected/${connectors.size} avatars attached"
         }
-        return "$head — $detail"
+        val lines = realms.map { realm ->
+            val devices = realm.connectors.joinToString(", ") {
+                "${it.label} ${it.state.symbol()}"
+            }
+            if (realms.size > 1) "${realm.name}: $devices" else devices
+        }
+        return (listOf(head) + lines).joinToString("\n")
     }
 
     private fun createNotificationChannel() {
@@ -982,7 +1011,10 @@ data class ConnectorUi(
     val descriptorJson: String,
     val state: NostrTransport.ConnectionState,
     /** When RETRYING began, for the backoff sub-line on the failing row. */
-    val retryingSince: Long? = null
+    val retryingSince: Long? = null,
+    /** Which backoff attempt is in flight, and out of how many. */
+    val retryAttempt: Int? = null,
+    val retryTotal: Int? = null
 )
 
 fun NostrTransport.ConnectionState.describe(): String = when (this) {
