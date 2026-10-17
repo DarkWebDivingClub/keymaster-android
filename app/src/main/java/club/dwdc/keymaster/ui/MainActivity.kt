@@ -19,6 +19,7 @@ import club.dwdc.keymaster.nip46.NostrConnectUrl
 import club.dwdc.keymaster.ui.components.AvatarConfirmDialog
 import club.dwdc.keymaster.ui.components.Nip46ConfirmDialog
 import club.dwdc.keymaster.ui.screens.AvatarScanScreen
+import club.dwdc.keymaster.ui.screens.CreateFirstIdentityScreen
 import club.dwdc.keymaster.ui.screens.HomeScreen
 import club.dwdc.keymaster.ui.screens.Nip46ScanScreen
 import club.dwdc.keymaster.ui.screens.RestoreGpgScanScreen
@@ -40,13 +41,16 @@ class MainActivity : ComponentActivity() {
         val seedRepo = SeedRepository(this)
         if (seedRepo.hasSeed()) {
             migrateAccountsToKVMetaStore()
-            ensureDefaultIdentity()
         }
 
         setContent {
             KeyMasterTheme {
                 val navController = rememberNavController()
-                val startDest = if (seedRepo.hasSeed()) "home" else "setup"
+                val startDest = when {
+                    !seedRepo.hasSeed() -> "setup"
+                    KeyMasterProvider.getMetaStore(this@MainActivity).identities().isEmpty() -> "firstidentity"
+                    else -> "home"
+                }
 
                 // State for the NIP-46 confirmation dialog
                 var pendingConnectUrl by remember { mutableStateOf<NostrConnectUrl?>(null) }
@@ -61,8 +65,17 @@ class MainActivity : ComponentActivity() {
                     composable("setup") {
                         SetupScreen(
                             onSetupComplete = {
-                                navController.navigate("home") {
+                                navController.navigate("firstidentity") {
                                     popUpTo("setup") { inclusive = true }
+                                }
+                            }
+                        )
+                    }
+                    composable("firstidentity") {
+                        CreateFirstIdentityScreen(
+                            onIdentityCreated = {
+                                navController.navigate("home") {
+                                    popUpTo("firstidentity") { inclusive = true }
                                 }
                             }
                         )
@@ -77,7 +90,19 @@ class MainActivity : ComponentActivity() {
                             },
                             onNavigateToRestoreScan = {
                                 navController.navigate("restoregpgscan")
+                            },
+                            onNavigateToSeedManage = {
+                                navController.navigate("seedmanage")
                             }
+                        )
+                    }
+                    composable("seedmanage") {
+                        SetupScreen(
+                            hasSeed = true,
+                            onSetupComplete = {
+                                navController.popBackStack("home", inclusive = false)
+                            },
+                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable(
@@ -206,15 +231,4 @@ class MainActivity : ComponentActivity() {
         Log.d(TAG, "Account migration complete")
     }
 
-    /**
-     * Ensure the "default" identity exists in KVMetaStore.
-     */
-    private fun ensureDefaultIdentity() {
-        val store = KeyMasterProvider.getMetaStore(this)
-        val existing = store.byIdentity("default")
-        if (existing.isEmpty()) {
-            val controller = KeyMasterProvider.getController(this) ?: return
-            controller.createIdentity("default", "default", "default")
-        }
-    }
 }

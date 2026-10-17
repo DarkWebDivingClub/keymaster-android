@@ -1,6 +1,7 @@
 package club.dwdc.keymaster.ui.screens
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -37,6 +38,7 @@ fun GenerateSeedScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
             .padding(24.dp)
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -162,7 +164,6 @@ fun GenerateSeedScreen(
             label = { Text("Passphrase (optional)") },
             visualTransformation = if (showPassphrase) VisualTransformation.None
                 else PasswordVisualTransformation(),
-            singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
 

@@ -62,15 +62,13 @@ fun RestoreGpgScanScreen(
 
                 val grouped = entries.groupBy { it.metadata.identity }
                 for ((identity, keys) in grouped) {
-                    controller.restoreIdentity(identity)
-                    for (key in keys) {
-                        controller.restoreGpgKeys(
-                            identity,
-                            key.metadata.pgp_name,
-                            key.metadata.pgp_email,
-                            key.metadata.creation_time.toLong()
-                        )
-                    }
+                    val first = keys.first()
+                    controller.createIdentity(
+                        identity,
+                        first.metadata.pgp_name,
+                        first.metadata.pgp_email,
+                        first.metadata.creation_time.toLong()
+                    )
                 }
 
                 // Refresh the account list

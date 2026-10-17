@@ -46,7 +46,8 @@ import club.dwdc.keymaster.ui.components.CreateAccountDialog
 fun HomeScreen(
     onNavigateToNip46Scan: (accountIdentity: String) -> Unit = {},
     onNavigateToAvatarScan: (identity: String) -> Unit = {},
-    onNavigateToRestoreScan: () -> Unit = {}
+    onNavigateToRestoreScan: () -> Unit = {},
+    onNavigateToSeedManage: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val seedRepo = SeedRepository(context)
@@ -146,7 +147,8 @@ fun HomeScreen(
             } else {
                 AddAccountPage(
                     onCreate = { showCreateDialog = true },
-                    onRestore = onNavigateToRestoreScan
+                    onRestore = onNavigateToRestoreScan,
+                    onManageSeed = onNavigateToSeedManage
                 )
             }
         }
@@ -748,7 +750,11 @@ private fun Nip46SessionRow(
 }
 
 @Composable
-private fun AddAccountPage(onCreate: () -> Unit, onRestore: () -> Unit) {
+private fun AddAccountPage(
+    onCreate: () -> Unit,
+    onRestore: () -> Unit,
+    onManageSeed: () -> Unit
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -774,6 +780,13 @@ private fun AddAccountPage(onCreate: () -> Unit, onRestore: () -> Unit) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Restore from QR")
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onManageSeed,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Manage Seed")
             }
         }
     }

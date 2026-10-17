@@ -51,6 +51,27 @@ class AndroidKVMetaStore(context: Context) : KVMetaStore {
     override fun identities(): List<String> =
         entries.values.map { it.identity() }.distinct()
 
+    // --- export / import ---
+
+    fun toJson(): String {
+        val rawMap = LinkedHashMap<String, JsonObject>()
+        for ((path, entry) in entries) {
+            rawMap[hdPathToString(path)] = serializeEntry(entry)
+        }
+        return GSON.toJson(rawMap, MAP_TYPE)
+    }
+
+    fun replaceFromJson(json: String) {
+        val rawMap: LinkedHashMap<String, JsonObject> =
+            GSON.fromJson(json, MAP_TYPE) ?: return
+        entries.clear()
+        for ((pathStr, obj) in rawMap) {
+            val path = HDPath.parsePath(pathStr)
+            entries[path] = deserializeEntry(path, obj)
+        }
+        save()
+    }
+
     // --- persistence ---
 
     private fun load(): MutableMap<HDPath, AbstractKeyEntry> {
