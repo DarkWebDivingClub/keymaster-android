@@ -60,6 +60,7 @@ class AvatarService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service created")
+        running = true
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
         sessionRepo = AvatarSessionRepository(this)
@@ -67,16 +68,23 @@ class AvatarService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) {
-            // System restarted the service (START_STICKY) — restore persisted session
-            restoreSession()
-        } else when (intent.action) {
+        // Every branch either goes foreground or stops. A start that falls
+        // through doing nothing leaves a service the platform kills for
+        // missing its foreground window, which is why restore used to be
+        // reachable only via the platform's own null intent.
+        when (intent?.action) {
             ACTION_ATTACH -> handleAttach(intent)
             ACTION_DETACH -> handleDetach()
             ACTION_STOP -> {
                 cleanupController()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            }
+            // null covers both the START_STICKY restart and a bare start
+            null, ACTION_RESTORE -> restoreSession()
+            else -> {
+                Log.w(TAG, "Unknown action ${intent.action}, treating as restore")
+                restoreSession()
             }
         }
         return START_STICKY
@@ -86,6 +94,7 @@ class AvatarService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "Service destroyed")
+        running = false
         unregisterReconnectListeners()
         cleanupController()
         serviceScope.cancel()
@@ -137,6 +146,7 @@ class AvatarService : Service() {
                 )
                 sessionRepo.saveSession(session)
                 _avatarSession.value = session
+                AvatarWatchdog.schedule(this@AvatarService)
                 updateNotification("Attached via ${if (rfcommMode) "RFCOMM" else descriptor.relay()}")
                 Log.d(TAG, "Attached via ${if (rfcommMode) "RFCOMM" else descriptor.relay()}, " +
                     "identity=$identity, additional=$additionalIdentities, id=$attachId")
@@ -153,6 +163,7 @@ class AvatarService : Service() {
     private fun handleDetach() {
         serviceScope.launch {
             cleanupController()
+            AvatarWatchdog.cancel(this@AvatarService)
             sessionRepo.clearSession()
             _avatarSession.value = null
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -164,6 +175,10 @@ class AvatarService : Service() {
     private fun restoreSession() {
         val session = sessionRepo.getSession()
         if (session == null) {
+            // A spurious start — a watchdog firing after a detach, say — must
+            // not half-attach anything. Stop cleanly instead.
+            Log.d(TAG, "Restore requested with nothing persisted; stopping")
+            AvatarWatchdog.cancel(this)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
@@ -507,13 +522,28 @@ class AvatarService : Service() {
         private const val BT_RECONNECT_CHANNEL_ID = "bt_reconnect"
         private const val BT_RECONNECT_NOTIFICATION_ID = 4603
 
-        private const val ACTION_ATTACH = "club.dwdc.keymaster.avatar.ATTACH"
-        private const val ACTION_DETACH = "club.dwdc.keymaster.avatar.DETACH"
-        private const val ACTION_STOP = "club.dwdc.keymaster.avatar.STOP"
+        // Public so a watchdog, a boot receiver and `adb shell
+        // start-foreground-service` can all name the path they want. The
+        // service stays android:exported="false" in release; the debug
+        // manifest opens it for the test script.
+        const val ACTION_ATTACH = "club.dwdc.keymaster.avatar.ATTACH"
+        const val ACTION_DETACH = "club.dwdc.keymaster.avatar.DETACH"
+        const val ACTION_STOP = "club.dwdc.keymaster.avatar.STOP"
+        const val ACTION_RESTORE = "club.dwdc.keymaster.avatar.RESTORE"
 
-        private const val EXTRA_DESCRIPTOR_JSON = "descriptor_json"
-        private const val EXTRA_IDENTITY = "identity"
-        private const val EXTRA_ADDITIONAL_IDENTITIES = "additional_identities"
+        const val EXTRA_DESCRIPTOR_JSON = "descriptor_json"
+        const val EXTRA_IDENTITY = "identity"
+        const val EXTRA_ADDITIONAL_IDENTITIES = "additional_identities"
+
+        /**
+         * Whether the service is alive. The watchdog needs this: a persisted
+         * session with no running service is exactly the state
+         * android-avatar-service-not-restarted-after-sleep leaves behind, and
+         * it is not observable from outside the process otherwise.
+         */
+        @Volatile
+        var running: Boolean = false
+            private set
 
         private val _connectionState = MutableStateFlow(NostrTransport.ConnectionState.DISCONNECTED)
         val connectionState: StateFlow<NostrTransport.ConnectionState> = _connectionState
@@ -542,6 +572,26 @@ class AvatarService : Service() {
                 context.startService(intent)
             }
         }
+
+        /**
+         * Ask the service to re-attach whatever is persisted. Safe to call
+         * when nothing is persisted (it stops again) and when already
+         * attached (the attach is idempotent per connector).
+         */
+        fun restore(context: Context) {
+            val intent = Intent(context, AvatarService::class.java).apply {
+                action = ACTION_RESTORE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        /** True when there is something for [restore] to re-attach. */
+        fun hasPersistedState(context: Context): Boolean =
+            AvatarSessionRepository(context).hasSession()
 
         fun detach(context: Context) {
             val intent = Intent(context, AvatarService::class.java).apply {

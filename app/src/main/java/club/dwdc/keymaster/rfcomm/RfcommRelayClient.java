@@ -51,7 +51,18 @@ public class RfcommRelayClient implements RelayClient {
         socket = (BluetoothSocket) device.getClass()
                 .getMethod("createRfcommSocket", int.class)
                 .invoke(device, channel);
-        socket.connect();
+        try {
+            socket.connect();
+        } catch (SecurityException e) {
+            // BLUETOOTH_CONNECT is a runtime permission. The scan screen asks
+            // for it, but an attach restored by the service after a reboot or
+            // by the watchdog never passes through that screen, so the grant
+            // can be absent exactly when nobody is watching. Report it as a
+            // connection failure the caller can show, rather than letting a
+            // SecurityException escape as if the avatar were unreachable.
+            throw new IOException("Bluetooth permission not granted "
+                    + "(BLUETOOTH_CONNECT) — reopen the app and attach once", e);
+        }
 
         outputStream = socket.getOutputStream();
         Log.i(TAG, "Connected to " + btAddress + " channel " + channel);

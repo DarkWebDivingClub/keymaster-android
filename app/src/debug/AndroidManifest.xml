@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only overlay. AvatarService is exported="false" in the main manifest,
+  which is right for release: nothing outside the app may attach a realm. It
+  also makes this mission's acceptance test impractical, since every attach
+  then needs a human unlocking the phone and scanning a QR, and the script has
+  28 checks with repeated attach/detach cycles.
+
+  On a debug build the service is reachable from adb; the exact command is in
+  manual-test/multi-realm-android.md (the attach helper). Release builds never
+  see this file.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <service
+            android:name=".avatar.AvatarService"
+            android:exported="true"
+            android:foregroundServiceType="dataSync"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

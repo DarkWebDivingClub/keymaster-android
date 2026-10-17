@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.NFC" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Reconnect feedback: how a user notices the connector came back -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Re-attach after a reboot without the app being opened by hand -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- The avatar connection is the product; without the exemption the
+         service is killed under doze and the watchdog may not restart it -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
@@ -70,6 +77,23 @@
             android:name=".avatar.AvatarService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Restarts the service when it has been killed with a session
+             persisted; see AvatarWatchdog -->
+        <receiver
+            android:name=".avatar.AvatarWatchdog$Receiver"
+            android:exported="false" />
+
+        <!-- BOOT_COMPLETED is a protected broadcast: only the system can send
+             it, so exported="true" does not widen anything -->
+        <receiver
+            android:name=".avatar.AvatarBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

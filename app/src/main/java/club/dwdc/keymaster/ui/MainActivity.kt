@@ -10,6 +10,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import club.dwdc.keymaster.avatar.AvatarService
+import club.dwdc.keymaster.avatar.AvatarWatchdog
+import club.dwdc.keymaster.avatar.BatteryOptimization
 import club.dwdc.keymaster.data.AccountRepository
 import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.PermissionRepository
@@ -33,6 +35,24 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "MainActivity"
         private const val PREFS_NAME = "keymaster_migration"
         private const val KEY_ACCOUNTS_MIGRATED = "accounts_migrated_to_kvmetastore"
+    }
+
+    /**
+     * Last line of defence for the service lifecycle: opening the app
+     * re-attaches whatever is persisted if the service is gone.
+     *
+     * The watchdog alarm and the boot receiver cover the cases where nobody
+     * touches the phone; this covers the case where somebody does, and it is
+     * the one trigger that needs no exemption, because a foreground service
+     * started from a visible activity is always allowed.
+     */
+    override fun onResume() {
+        super.onResume()
+        if (AvatarWatchdog.needsRestore(this)) {
+            Log.i(TAG, "Session persisted but service not running — restoring on resume")
+            AvatarService.restore(this)
+            AvatarWatchdog.schedule(this)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -169,6 +189,14 @@ class MainActivity : ComponentActivity() {
                         descriptorJson = descriptorJson,
                         defaultIdentity = pendingAvatarIdentity,
                         onConfirm = { identity, additionalIdentities ->
+                            // Asked here, not on launch: at the moment the
+                            // user attaches, "keep this connection alive" is
+                            // self-explanatory. Without the exemption the
+                            // service is killed under doze and no background
+                            // trigger may restart it.
+                            if (!BatteryOptimization.isExempt(this@MainActivity)) {
+                                BatteryOptimization.requestExemption(this@MainActivity)
+                            }
                             AvatarService.startAttach(
                                 this@MainActivity,
                                 descriptorJson,
