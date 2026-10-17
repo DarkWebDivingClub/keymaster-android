@@ -188,7 +188,7 @@ class MainActivity : ComponentActivity() {
                     AvatarConfirmDialog(
                         descriptorJson = descriptorJson,
                         defaultIdentity = pendingAvatarIdentity,
-                        onConfirm = { identity, additionalIdentities ->
+                        onConfirm = { identity, additionalIdentities, realmId, realmName ->
                             // Asked here, not on launch: at the moment the
                             // user attaches, "keep this connection alive" is
                             // self-explanatory. Without the exemption the
@@ -201,7 +201,9 @@ class MainActivity : ComponentActivity() {
                                 this@MainActivity,
                                 descriptorJson,
                                 identity,
-                                additionalIdentities
+                                additionalIdentities,
+                                realmId,
+                                realmName
                             )
                             pendingAvatarDescriptor = null
                             navController.popBackStack("home", inclusive = false)

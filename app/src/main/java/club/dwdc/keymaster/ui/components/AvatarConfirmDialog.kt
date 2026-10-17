@@ -1,6 +1,9 @@
 package club.dwdc.keymaster.ui.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateMap
@@ -10,117 +13,143 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import club.dwdc.keymaster.AvatarDescriptor
-import club.dwdc.keymaster.data.Account
+import club.dwdc.keymaster.avatar.AvatarLabels
+import club.dwdc.keymaster.avatar.AvatarService
+import club.dwdc.keymaster.avatar.RealmUi
 import club.dwdc.keymaster.data.KeyMasterProvider
 
 /**
- * Confirmation dialog shown after scanning/pasting an avatar descriptor.
- * Displays relay URL, services list, and identity selector.
+ * What happens after a QR scan.
+ *
+ * Three modes, and which one appears is decided by what already exists — the
+ * user is never asked a question the page they came from has already answered:
+ *
+ * - **First attach** (this identity has no realm): state the primary identity,
+ *   ask only which *additional* identities the realm should serve.
+ * - **Join** (realms exist): one radio list, "Add to", plus *New realm…*.
+ * - **Create** (*New realm…* picked): the same sheet as the first attach, with
+ *   a name field.
+ *
+ * The primary identity is stated and never picked: the card sits on an
+ * identity page, so pressing *+ Attach* already chose it.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AvatarConfirmDialog(
     descriptorJson: String,
     defaultIdentity: String,
-    onConfirm: (identity: String, additionalIdentities: List<String>) -> Unit,
+    onConfirm: (identity: String, additionalIdentities: List<String>,
+                realmId: Int, realmName: String?) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val descriptor = remember { AvatarDescriptor.fromJson(descriptorJson) }
     val accounts = remember { KeyMasterProvider.getAccounts(context) }
-    var selectedIdentity by remember { mutableStateOf(defaultIdentity) }
-    var expanded by remember { mutableStateOf(false) }
-    val alsoIdentities: SnapshotStateMap<String, Boolean> = remember { mutableStateMapOf() }
+    val realms by AvatarService.realms.collectAsState()
+    val myRealms = realms.filter { it.primaryIdentity == defaultIdentity }
+
+    // NO_REALM means "create one"; that is also the only option on a first attach.
+    var chosenRealm by remember(myRealms.size) {
+        mutableStateOf(myRealms.firstOrNull()?.id ?: AvatarService.NO_REALM)
+    }
+    var creating by remember { mutableStateOf(myRealms.isEmpty()) }
+    var realmName by remember { mutableStateOf("") }
+    val alsoServe: SnapshotStateMap<String, Boolean> = remember { mutableStateMapOf() }
+
+    val avatarLabel = remember(descriptorJson) {
+        AvatarLabels.resolve(context, descriptor)
+    }
+    val avatarLine = remember(descriptorJson) {
+        val transport = if (descriptor.isRfcomm) "BT ${descriptor.btAddr()}" else descriptor.relay()
+        "$avatarLabel · $transport"
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Attach to Avatar") },
+        title = {
+            Text(
+                when {
+                    creating && myRealms.isEmpty() -> "Attach this avatar"
+                    creating -> "New realm"
+                    else -> "Attach this avatar"
+                }
+            )
+        },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    text = "Relay",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = descriptor.relay(),
+                    text = avatarLine,
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace
                 )
 
                 if (descriptor.services().isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Services",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = descriptor.services().joinToString(", "),
-                        style = MaterialTheme.typography.bodySmall
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                Text(
-                    text = if (accounts.size >= 2) "Primary identity" else "Identity",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = selectedIdentity,
-                        onValueChange = {},
-                        readOnly = true,
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier
-                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                            .fillMaxWidth()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        accounts.forEach { account ->
-                            DropdownMenuItem(
-                                text = { Text(account.identity) },
-                                onClick = {
-                                    selectedIdentity = account.identity
-                                    alsoIdentities.remove(account.identity)
-                                    expanded = false
-                                }
-                            )
-                        }
+                if (!creating) {
+                    // Joining is one tap: pick a realm, press Add. The avatar
+                    // counts are there so the choice can be made without
+                    // remembering which realm is which.
+                    Label("Add to")
+                    myRealms.forEach { realm ->
+                        RealmChoice(
+                            title = realm.name,
+                            subtitle = avatarCount(realm),
+                            selected = chosenRealm == realm.id,
+                            onSelect = { chosenRealm = realm.id }
+                        )
                     }
-                }
+                    RealmChoice(
+                        title = "New realm…",
+                        subtitle = null,
+                        selected = false,
+                        onSelect = {
+                            creating = true
+                            chosenRealm = AvatarService.NO_REALM
+                        }
+                    )
+                } else {
+                    if (myRealms.isNotEmpty()) {
+                        OutlinedTextField(
+                            value = realmName,
+                            onValueChange = { realmName = it },
+                            label = { Text("Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
 
-                if (accounts.size >= 2) {
-                    Spacer(modifier = Modifier.height(12.dp))
-
+                    Label("Primary identity")
                     Text(
-                        text = "Also attach",
-                        style = MaterialTheme.typography.labelMedium,
+                        text = defaultIdentity,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "the page you attached from · signs the login",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    accounts
-                        .filter { it.identity != selectedIdentity }
-                        .forEach { account ->
+                    val others = accounts.filter { it.identity != defaultIdentity }
+                    if (others.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Label("Also serve")
+                        others.forEach { account ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Checkbox(
-                                    checked = alsoIdentities[account.identity] == true,
-                                    onCheckedChange = { checked ->
-                                        alsoIdentities[account.identity] = checked
-                                    }
+                                    checked = alsoServe[account.identity] == true,
+                                    onCheckedChange = { alsoServe[account.identity] = it }
                                 )
                                 Text(
                                     text = account.identity,
@@ -128,23 +157,76 @@ fun AvatarConfirmDialog(
                                 )
                             }
                         }
+                    }
                 }
             }
         },
         confirmButton = {
             Button(onClick = {
-                val additional = alsoIdentities
-                    .filter { it.value }
-                    .map { it.key }
-                onConfirm(selectedIdentity, additional)
+                val additional = alsoServe.filter { it.value }.map { it.key }
+                onConfirm(
+                    defaultIdentity,
+                    if (creating) additional else emptyList(),
+                    if (creating) AvatarService.NO_REALM else chosenRealm,
+                    realmName.takeIf { creating && it.isNotBlank() }
+                )
             }) {
-                Text("Attach")
+                Text(
+                    when {
+                        creating && myRealms.isEmpty() -> "Attach"
+                        creating -> "Create"
+                        else -> "Add"
+                    }
+                )
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
+            TextButton(onClick = {
+                // "Back" returns to the realm list; "Cancel" leaves.
+                if (creating && myRealms.isNotEmpty()) creating = false else onDismiss()
+            }) {
+                Text(if (creating && myRealms.isNotEmpty()) "Back" else "Cancel")
             }
         }
     )
 }
+
+@Composable
+private fun Label(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun RealmChoice(
+    title: String,
+    subtitle: String?,
+    selected: Boolean,
+    onSelect: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, onClick = onSelect)
+            .padding(vertical = 2.dp)
+    ) {
+        RadioButton(selected = selected, onClick = onSelect)
+        Column {
+            Text(text = title, style = MaterialTheme.typography.bodyMedium)
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+private fun avatarCount(realm: RealmUi): String =
+    if (realm.connectors.size == 1) "1 avatar" else "${realm.connectors.size} avatars"

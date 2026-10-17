@@ -9,6 +9,9 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,9 +34,11 @@ import club.dwdc.keymaster.SSHKeyEntry
 import club.dwdc.keymaster.NostrTransport
 import club.dwdc.keymaster.crypto.NostrKeyService
 import club.dwdc.keymaster.avatar.AvatarService
+import club.dwdc.keymaster.avatar.ConnectorUi
+import club.dwdc.keymaster.avatar.RealmUi
+import club.dwdc.keymaster.avatar.describe
 import club.dwdc.keymaster.data.Account
 import club.dwdc.keymaster.data.AppPermission
-import club.dwdc.keymaster.data.AvatarSession
 import club.dwdc.keymaster.data.KeyMasterProvider
 import club.dwdc.keymaster.data.Nip46Session
 import club.dwdc.keymaster.data.Nip46SessionRepository
@@ -89,8 +94,9 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        val allRealms by AvatarService.realms.collectAsState()
         Text(
-            text = "Nostr Signer Ready",
+            text = headerLine(allRealms),
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.secondary
         )
@@ -196,7 +202,11 @@ private fun AccountPage(
     var copiedNpub by remember { mutableStateOf(false) }
     var permissions by remember { mutableStateOf(permRepo.getPermissionsForAccount(account.pubkeyHex)) }
     var nip46Sessions by remember { mutableStateOf(sessionRepo.getSessionsForAccount(account.pubkeyHex)) }
-    val avatarSession by AvatarService.avatarSession.collectAsState()
+    val realms by AvatarService.realms.collectAsState()
+    // A realm appears on its primary identity's page and nowhere else: that is
+    // the same rule that lets "+ Attach" imply the primary, and it means no
+    // realm is ever rendered twice.
+    val myRealms = realms.filter { it.primaryIdentity == account.identity }
     val btReconnectPrompt by AvatarService.showBtReconnectPrompt.collectAsState()
     var btDialogDismissed by remember { mutableStateOf(false) }
     // Reset local dismiss when the prompt goes away (connection restored)
@@ -310,12 +320,15 @@ private fun AccountPage(
         Spacer(modifier = Modifier.height(24.dp))
 
         // Avatar card
-        AvatarCard(
-            avatarSession = avatarSession,
-            accountIdentity = account.identity,
+        AvatarsCard(
+            realms = myRealms,
             onAttach = onNavigateToAvatarScan,
-            onDetach = {
-                AvatarService.detach(context)
+            onDetachAll = { AvatarService.detach(context) },
+            onDetachConnector = { realmId, connectorId ->
+                AvatarService.detachConnector(context, realmId, connectorId)
+            },
+            onRenameRealm = { realmId, name ->
+                AvatarService.renameRealm(context, realmId, name)
             }
         )
 
@@ -600,13 +613,15 @@ private fun KeyEntriesCard(identity: String) {
 }
 
 @Composable
-private fun AvatarCard(
-    avatarSession: AvatarSession?,
-    accountIdentity: String,
+private fun AvatarsCard(
+    realms: List<RealmUi>,
     onAttach: () -> Unit,
-    onDetach: () -> Unit
+    onDetachAll: () -> Unit,
+    onDetachConnector: (realmId: Int, connectorId: Int) -> Unit,
+    onRenameRealm: (realmId: Int, name: String) -> Unit
 ) {
-    val connState by AvatarService.connectionState.collectAsState()
+    val connectors = realms.flatMap { it.connectors }
+    var renaming by remember { mutableStateOf<Int?>(null) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -615,84 +630,205 @@ private fun AvatarCard(
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Avatar",
-                style = MaterialTheme.typography.titleSmall
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (avatarSession != null && avatarSession.identity == accountIdentity) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = avatarSession.relayUrl,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace
+                    text = "Avatars",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = "Identity: ${avatarSession.identity}",
+                    text = countLabel(connectors),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (connectors.isEmpty()) {
+                Text(
+                    text = "Nothing attached. Scan an avatar QR code on a desktop.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                realms.forEach { realm ->
+                    // With one realm the heading is hidden: no point labelling
+                    // a group that is the whole list.
+                    if (realms.size > 1) {
+                        RealmHeading(
+                            realm = realm,
+                            renaming = renaming == realm.id,
+                            onStartRename = { renaming = realm.id },
+                            onRename = { name ->
+                                renaming = null
+                                onRenameRealm(realm.id, name)
+                            }
+                        )
+                    }
+                    realm.connectors.forEach { connector ->
+                        ConnectorRow(
+                            connector = connector,
+                            onDetach = { onDetachConnector(realm.id, connector.id) }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onAttach,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("+ Attach")
+            }
+
+            if (connectors.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
-
-                // Connection state indicator
-                ConnectionStateRow(connState)
-
-                Spacer(modifier = Modifier.height(12.dp))
-
                 OutlinedButton(
-                    onClick = onDetach,
+                    onClick = onDetachAll,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     )
                 ) {
-                    Text("Detach")
-                }
-            } else {
-                Text(
-                    text = "Not connected",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Button(
-                    onClick = onAttach,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Attach to Avatar")
+                    // "Detach" only while it can mean one thing.
+                    Text(if (connectors.size == 1) "Detach" else "Detach all")
                 }
             }
         }
     }
 }
 
+/**
+ * A realm is a heading inside the card, not a card of its own: one bold line
+ * with a rename pencil, and no per-realm controls.
+ */
 @Composable
-private fun ConnectionStateRow(state: NostrTransport.ConnectionState) {
-    val (color, label) = when (state) {
-        NostrTransport.ConnectionState.CONNECTED -> Color(0xFF4CAF50) to "Connected"
-        NostrTransport.ConnectionState.RETRYING -> Color(0xFFFFC107) to "Reconnecting..."
-        NostrTransport.ConnectionState.DISCONNECTED -> Color(0xFFF44336) to "Disconnected"
-    }
+private fun RealmHeading(
+    realm: RealmUi,
+    renaming: Boolean,
+    onStartRename: () -> Unit,
+    onRename: (String) -> Unit
+) {
     Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(vertical = 2.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
+        if (renaming) {
+            var draft by remember { mutableStateOf(realm.name) }
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                singleLine = true,
+                label = { Text("Realm name") },
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { onRename(draft) }) { Text("Save") }
+        } else {
+            Text(
+                text = realm.name,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onStartRename, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    imageVector = Icons.Filled.Edit,
+                    contentDescription = "Rename realm",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/** One avatar: state dot, label, transport badge, eject — and backoff when failing. */
+@Composable
+private fun ConnectorRow(connector: ConnectorUi, onDetach: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
             modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(stateColor(connector.state))
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = connector.label,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = connector.transport,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            IconButton(onClick = onDetach, modifier = Modifier.size(28.dp)) {
+                Text("⏏", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        // The sub-line belongs to the row that is failing, not to the card.
+        if (connector.state != NostrTransport.ConnectionState.CONNECTED) {
+            Text(
+                text = subLine(connector),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, bottom = 4.dp)
+            )
+        }
+    }
+}
+
+private fun stateColor(state: NostrTransport.ConnectionState): Color = when (state) {
+    NostrTransport.ConnectionState.CONNECTED -> Color(0xFF4CAF50)
+    NostrTransport.ConnectionState.RETRYING -> Color(0xFFFFC107)
+    NostrTransport.ConnectionState.DISCONNECTED -> Color(0xFFF44336)
+}
+
+private fun subLine(connector: ConnectorUi): String {
+    val since = connector.retryingSince
+    if (connector.state == NostrTransport.ConnectionState.RETRYING && since != null) {
+        val seconds = ((System.currentTimeMillis() - since) / 1000).coerceAtLeast(0)
+        return "Reconnecting · retrying for ${seconds}s"
+    }
+    return connector.state.describe()
+}
+
+/** "none", "1 connected", or "1 of 2" while one is down. */
+private fun countLabel(connectors: List<ConnectorUi>): String {
+    if (connectors.isEmpty()) return "none"
+    val connected = connectors.count {
+        it.state == NostrTransport.ConnectionState.CONNECTED
+    }
+    return if (connected == connectors.size) "$connected connected"
+    else "$connected of ${connectors.size}"
+}
+
+/**
+ * The line under "KeyMaster". Counts realms only when there is more than one,
+ * so a single-realm user reads exactly what phase B showed.
+ */
+private fun headerLine(realms: List<RealmUi>): String {
+    val connectors = realms.flatMap { it.connectors }
+    return when {
+        connectors.isEmpty() -> "Nostr Signer Ready"
+        realms.size > 1 -> "${connectors.size} avatars in ${realms.size} realms"
+        connectors.size == 1 -> "1 avatar attached"
+        else -> "${connectors.size} avatars attached"
     }
 }
 
