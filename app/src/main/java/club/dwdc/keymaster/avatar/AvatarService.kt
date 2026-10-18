@@ -165,13 +165,15 @@ class AvatarService : Service() {
         updateNotification("Connecting to $label...")
 
         serviceScope.launch {
+            var target: RealmTarget? = null
             try {
                 val controller = requireController()
                 // Approval behaviour is deliberately unchanged by this mission.
                 controller.setApprovalHandler { _, _ -> true }
 
-                val realmId = resolveRealm(controller, joinRealmId, realmName, identity,
+                target = resolveRealm(controller, joinRealmId, realmName, identity,
                     additionalIdentities)
+                val realmId = target.id
                 watchConnectors(controller, realmId)
 
                 val result = controller.attachToRealm(realmId, descriptor)
@@ -188,8 +190,21 @@ class AvatarService : Service() {
                     if (duplicate) "$label is already attached to this realm"
                     else "Attach failed: ${e.message}"
                 )
-                // Deliberately not clearing the store: a failed attach is not
-                // a reason to forget realms that were already working.
+                // A realm this attach created, and only such a realm, goes
+                // with it. Otherwise every failed scan leaves a realm alive
+                // in the core with no connectors and no way to reach it —
+                // invisible, since the list is built from the store, and
+                // holding its handlers for the life of the process. Joining
+                // an existing realm must of course leave that realm alone.
+                target?.let {
+                    if (it.created) {
+                        Log.i(TAG, "Removing realm ${it.id}, created for an attach that failed")
+                        KeyMasterProvider.getController(this@AvatarService)?.detachRealm(it.id)
+                        realmRepo.remove(it.id)
+                    }
+                }
+                // Deliberately not clearing the store otherwise: a failed
+                // attach is not a reason to forget realms that were working.
                 stopIfIdle()
             }
         }
@@ -210,23 +225,30 @@ class AvatarService : Service() {
         realmName: String?,
         identity: String,
         additionalIdentities: List<String>
-    ): Int {
+    ): RealmTarget {
         if (joinRealmId == NO_REALM) {
-            return createRealm(controller, realmName, identity, additionalIdentities)
+            return RealmTarget(
+                createRealm(controller, realmName, identity, additionalIdentities), true)
         }
-        if (controller.getRealm(joinRealmId) != null) return joinRealmId
+        if (controller.getRealm(joinRealmId) != null) return RealmTarget(joinRealmId, false)
 
         val stored = realmRepo.getRealms().firstOrNull { it.id == joinRealmId }
         if (stored == null) {
             Log.w(TAG, "Realm $joinRealmId is unknown; creating one instead")
-            return createRealm(controller, realmName, identity, additionalIdentities)
+            return RealmTarget(
+                createRealm(controller, realmName, identity, additionalIdentities), true)
         }
         Log.i(TAG, "Realm ${stored.name} was not live; rebuilding it to join")
         val rebuilt = createRealm(controller, stored.name, stored.primaryIdentity,
             stored.alsoServe)
         realmRepo.reassignId(stored.id, rebuilt)
-        return rebuilt
+        // Rebuilt, not created: the user already had this realm, so a failed
+        // attach must not take it away.
+        return RealmTarget(rebuilt, false)
     }
+
+    /** A realm to attach to, and whether this attach is what brought it into being. */
+    private data class RealmTarget(val id: Int, val created: Boolean)
 
     private fun createRealm(
         controller: KeyMasterController,
