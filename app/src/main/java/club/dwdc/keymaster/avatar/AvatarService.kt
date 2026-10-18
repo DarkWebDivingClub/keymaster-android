@@ -65,8 +65,8 @@ class AvatarService : Service() {
     private var rfcommMode = false
 
     /** Per connector, so one avatar's backoff cannot block another's. */
-    private val reconnecting = ConcurrentHashMap<Int, AtomicBoolean>()
-    private val previousState = ConcurrentHashMap<Int, NostrTransport.ConnectionState>()
+    private val reconnecting = ConcurrentHashMap<String, AtomicBoolean>()
+    private val previousState = ConcurrentHashMap<String, NostrTransport.ConnectionState>()
 
     /** Realms that already have a state listener installed. */
     private val listening = ConcurrentHashMap.newKeySet<Int>()
@@ -380,9 +380,12 @@ class AvatarService : Service() {
         }
         val realmId = liveId ?: createRealm(controller, stored.name, stored.primaryIdentity,
             stored.alsoServe)
-        if (liveId == null) {
-            // The core draws a fresh id; the stored record follows it, since a
-            // rebuilt realm is a new realm cryptographically either way.
+        if (realmId != stored.id) {
+            // The stored record follows the core, whether the realm was just
+            // rebuilt under a fresh id or was already live under one. Letting
+            // the two drift apart is not cosmetic: publish() finds the live
+            // realm by the stored id, so a diverged record shows a serving
+            // avatar as disconnected.
             realmRepo.reassignId(stored.id, realmId)
         }
         watchConnectors(controller, realmId)
@@ -448,8 +451,8 @@ class AvatarService : Service() {
                 if (left.isEmpty()) realmRepo.remove(realmId)
                 else realmRepo.upsert(stored.copy(connectors = left))
             }
-            reconnecting.remove(connectorId)
-            previousState.remove(connectorId)
+            reconnecting.remove("$realmId:$connectorId")
+            previousState.remove("$realmId:$connectorId")
             publish(controller)
             Log.i(TAG, "Detached connector $connectorId from realm $realmId")
             stopIfIdle()
@@ -509,11 +512,25 @@ class AvatarService : Service() {
         state: NostrTransport.ConnectionState
     ) {
         Log.d(TAG, "Realm $realmId connector $connectorId: $state")
-        // Match on the connector, not the realm: a restore renumbers realms,
-        // so a row still carrying the old realm id would never be updated and
-        // the card would freeze at whatever it last showed.
+        // Which row this belongs to needs both halves. A connector id is the
+        // mangled login xpub of one avatar, so the *same* avatar attached to
+        // two realms carries the same id in both: matching on the connector
+        // alone painted a healthy realm's row red when an attach failed
+        // elsewhere with the same avatar. Matching on the realm alone is no
+        // better, because a restore renumbers realms. So: the realm when we
+        // have it, and the connector alone only when exactly one row carries
+        // it.
+        val byRealm = _realms.value.any { it.id == realmId }
+        val unique = _realms.value.sumOf { r -> r.connectors.count { it.id == connectorId } } == 1
+        if (!byRealm && !unique) {
+            Log.d(TAG, "State for connector $connectorId in unknown realm $realmId; " +
+                "ambiguous, leaving the card alone")
+            return
+        }
         _realms.value = _realms.value.map { realm ->
-            if (realm.connectors.none { it.id == connectorId }) realm else realm.copy(
+            if (if (byRealm) realm.id != realmId else realm.connectors.none { it.id == connectorId })
+                realm
+            else realm.copy(
                 connectors = realm.connectors.map {
                     if (it.id == connectorId) it.copy(
                         state = state,
@@ -529,7 +546,7 @@ class AvatarService : Service() {
         }
         updateNotification(notificationText())
 
-        val previous = previousState.put(connectorId, state)
+        val previous = previousState.put("$realmId:$connectorId", state)
         // Vibrate on RETRYING -> CONNECTED: the signal that a sleeping desktop
         // came back, per connector rather than per phone.
         if (state == NostrTransport.ConnectionState.CONNECTED &&
@@ -541,7 +558,7 @@ class AvatarService : Service() {
 
         if (rfcommMode && state == NostrTransport.ConnectionState.DISCONNECTED) {
             val descriptorJson = descriptorOf(realmId, connectorId)
-            if (descriptorJson != null && guard(connectorId).compareAndSet(false, true)) {
+            if (descriptorJson != null && guard(realmId, connectorId).compareAndSet(false, true)) {
                 Log.i(TAG, "Connector $connectorId dropped; reconnecting")
                 serviceScope.launch {
                     reconnectWithBackoff(controller, realmId, connectorId, descriptorJson)
@@ -606,8 +623,13 @@ class AvatarService : Service() {
         updateNotification(notificationText())
     }
 
-    private fun guard(connectorId: Int): AtomicBoolean =
-        reconnecting.computeIfAbsent(connectorId) { AtomicBoolean(false) }
+    /**
+     * One guard per avatar per realm. Keying on the connector alone would let
+     * one realm's reconnect block another's for the same avatar, which is a
+     * legitimate configuration.
+     */
+    private fun guard(realmId: Int, connectorId: Int): AtomicBoolean =
+        reconnecting.computeIfAbsent("$realmId:$connectorId") { AtomicBoolean(false) }
 
     /**
      * Re-attach one connector, leaving every other connector alone.
@@ -675,7 +697,7 @@ class AvatarService : Service() {
                 }
             }
         } finally {
-            guard(connectorId).set(false)
+            guard(realmId, connectorId).set(false)
         }
     }
 
@@ -684,7 +706,11 @@ class AvatarService : Service() {
     private fun publish(controller: KeyMasterController?) {
         val live = controller?.realms().orEmpty()
         _realms.value = realmRepo.getRealms().map { stored ->
+            val storedConnectors = stored.connectors.map { connectorIdOf(it.descriptorJson) }
+            // By id when it matches, otherwise by the avatars it holds: the
+            // card must reflect the core even if the two have drifted.
             val realm = live[stored.id]
+                ?: live.values.firstOrNull { r -> r.connectorIds().any { it in storedConnectors } }
             val connectorIds = realm?.connectorIds().orEmpty()
             stored.toUi().copy(
                 name = realm?.name() ?: stored.name,
@@ -818,7 +844,7 @@ class AvatarService : Service() {
         for (realm in _realms.value) {
             for (connector in realm.connectors) {
                 if (connector.state == NostrTransport.ConnectionState.CONNECTED) continue
-                if (!guard(connector.id).compareAndSet(false, true)) continue
+                if (!guard(realm.id, connector.id).compareAndSet(false, true)) continue
                 Log.i(TAG, "Reconnecting ${connector.label} after $reason")
                 serviceScope.launch {
                     reconnectWithBackoff(controller, realm.id, connector.id,
@@ -847,7 +873,7 @@ class AvatarService : Service() {
                         }.getOrNull() ?: continue
                         if (!btAddr.equals(address, ignoreCase = true)) continue
                         if (connector.state == NostrTransport.ConnectionState.CONNECTED) continue
-                        if (!guard(connector.id).compareAndSet(false, true)) continue
+                        if (!guard(realm.id, connector.id).compareAndSet(false, true)) continue
                         Log.i(TAG, "ACL up for ${connector.label}; reconnecting")
                         serviceScope.launch {
                             reconnectWithBackoff(controller, realm.id, connector.id,
