@@ -6,18 +6,53 @@ This guide covers building the KeyMaster Android app from source.
 
 - JDK 21
 - Android SDK 35
+- Maven 3.9+ (for the dependency chain below)
 
 The repository includes a `.java-version` file for version managers
 such as `jenv`, `asdf`, and `mise`. Set `JAVA_HOME` to a JDK 21
 installation when your environment does not use one of these tools.
 
+JDK 21 is not just a recommendation: JDK 25 is the default `java` on
+current Ubuntu, and Gradle 8.13 cannot parse its class files. Building
+against it fails with `Unsupported class file major version 69`.
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+```
+
+## Build the dependency chain first
+
+The app depends on `keymaster.core` and `keyvault.nostr`, which are
+**not published to the internal Maven repository yet**. Gradle resolves
+them from `mavenLocal()`, so all three upstream repos must be built and
+installed into `~/.m2` first, in this order. A clean clone will not
+build until you have done this.
+
+| Order | Repo | Command | Full instructions |
+|---|---|---|---|
+| 1 | `git@github.com:dukeh3/bitcoinj.git` (fork) | `./gradlew publishToMavenLocal` | [`FORK.md`](https://github.com/dukeh3/bitcoinj/blob/master/FORK.md) |
+| 2 | `git@github.com:DarkWebDivingClub/keyvault.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keyvault#readme) |
+| 3 | `git@github.com:DarkWebDivingClub/keymaster.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keymaster#build) |
+
+bitcoinj is a patched fork on a personal account rather than the
+DarkWebDivingClub org, and is not on any public repository — if you
+cannot clone it, ask for access before anything else, because it is step
+one.
+
 ## Build
 
 ```bash
-git clone https://github.com/DarkWebDivingClub/club.dwdc.keymaster.android.git
-cd club.dwdc.keymaster.android
+git clone git@github.com:DarkWebDivingClub/keymaster-android.git
+cd keymaster-android
 ./gradlew test assembleDebug
 ```
+
+`./gradlew test` currently runs no tests — the app has no
+`app/src/test` sources yet — so `assembleDebug` succeeding is the real
+signal.
+
+If dependency resolution fails after you have bumped a version
+upstream, add `--refresh-dependencies`.
 
 Gradle and Kotlin use a JDK 21 toolchain. Android Java and Kotlin
 bytecode remain targeted at Java 17 for device compatibility.
@@ -59,10 +94,10 @@ app/src/main/java/club/dwdc/keymaster/
 
 Internal Maven repository: `https://maven.398ja.xyz/releases`
 
-KeyVault and KeyMaster Core are not published there yet, so they resolve
-from `mavenLocal()`. Build them from source first, in this order:
-bitcoinj (`./gradlew publishToMavenLocal`), then keyvault, then keymaster
-(`mvn install` in each). All three need `JAVA_HOME` on JDK 21.
+KeyVault and KeyMaster Core are not published there yet and resolve from
+`mavenLocal()` — see [Build the dependency chain
+first](#build-the-dependency-chain-first). When you bump either version
+here, it must already be installed in `~/.m2`.
 
 ## SDK configuration
 
