@@ -50,14 +50,19 @@ app/src/main/java/club/dwdc/keymaster/
 
 | Dependency | Version | Purpose |
 |-----------|---------|---------|
-| KeyVault Nostr | 0.2.0 | BIP-39/BIP-32 key derivation |
-| KeyMaster Core | 0.5.0 | Identity CRUD, service handlers |
-| BouncyCastle | 1.80 | Schnorr (BIP-340), NIP-44 crypto |
+| KeyVault Nostr | 0.3.0 | BIP-39/BIP-32 key derivation |
+| KeyMaster Core | 0.7.2 | Identity CRUD, service handlers |
+| BouncyCastle | 1.80 | Schnorr (BIP-340), NIP-44 crypto — resolves up to 1.84, pulled in by bitcoinj |
 | CameraX | 1.4.1 | QR code scanning |
 | OkHttp | 4.12.0 | WebSocket for NIP-46 relays |
 | Security Crypto | 1.1.0-alpha06 | Encrypted SharedPreferences |
 
 Internal Maven repository: `https://maven.398ja.xyz/releases`
+
+KeyVault and KeyMaster Core are not published there yet, so they resolve
+from `mavenLocal()`. Build them from source first, in this order:
+bitcoinj (`./gradlew publishToMavenLocal`), then keyvault, then keymaster
+(`mvn install` in each). All three need `JAVA_HOME` on JDK 21.
 
 ## SDK configuration
 
