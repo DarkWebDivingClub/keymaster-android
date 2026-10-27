@@ -39,6 +39,14 @@ with no credentials and no SSH key — useful on a fresh machine. Use the
 `git@github.com:` form instead once you have a key registered and need
 to push.
 
+> **The chain above is currently incomplete.** Step 2 fails on a machine
+> with an empty `~/.m2`: `keyvault.nostr` needs `nostr.id.IIdentity`,
+> which is absent from every `xyz.tcheeric:nostr-java-identity` release
+> on Maven Central and exists only in the
+> [FlowRateHQ fork](https://github.com/FlowRateHQ/nostr-java). Until
+> keymaster mission 46.3 versions that fork, build and `mvn install` it
+> as a step 0 before bitcoinj.
+
 Note that bitcoinj is a patched fork living on the `dukeh3` account
 rather than the DarkWebDivingClub org, and the artifacts it produces are
 on no public Maven repository — which is why step 1 is a source build
