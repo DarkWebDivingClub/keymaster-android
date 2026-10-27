@@ -7,6 +7,7 @@ This guide covers building the KeyMaster Android app from source.
 - JDK 21
 - Android SDK 35
 - Maven 3.9+ (for the dependency chain below)
+- Gradle on your PATH (for step 1 below — bitcoinj ships no wrapper)
 
 The repository includes a `.java-version` file for version managers
 such as `jenv`, `asdf`, and `mise`. Set `JAVA_HOME` to a JDK 21
@@ -31,7 +32,7 @@ build until you have done this.
 | Order | Repo | Command | Full instructions |
 |---|---|---|---|
 | 0 | `https://github.com/DarkWebDivingClub/nostr-java.git` (fork) | `mvn install -DskipTests` | [`FORK.md`](https://github.com/DarkWebDivingClub/nostr-java/blob/main/FORK.md) |
-| 1 | `https://github.com/DarkWebDivingClub/bitcoinj.git` (fork) | `./gradlew publishToMavenLocal` | [`FORK.md`](https://github.com/DarkWebDivingClub/bitcoinj/blob/master/FORK.md) |
+| 1 | `https://github.com/DarkWebDivingClub/bitcoinj.git` (fork) | `gradle publishToMavenLocal` | [`FORK.md`](https://github.com/DarkWebDivingClub/bitcoinj/blob/master/FORK.md) |
 | 2 | `https://github.com/DarkWebDivingClub/keyvault.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keyvault#readme) |
 | 3 | `https://github.com/DarkWebDivingClub/keymaster.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keymaster#build) |
 
