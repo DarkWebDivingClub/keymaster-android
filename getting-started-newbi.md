@@ -6,21 +6,31 @@ phone and connecting it to the desktop Avatar.
 ## What You Need
 
 - An Android phone (Android 10+)
-- A desktop with the KeyMaster Avatar installed
-  ([keymaster-avatar](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar))
-- Network connectivity between phone and desktop (WiFi or
-  Bluetooth PAN)
-- The relay (strfry) running on the desktop
+- A desktop with the KeyMaster Avatar installed — see
+  [keymaster-avatar](https://github.com/DarkWebDivingClub/keymaster-avatar)
+  and its
+  [getting-started guide](https://github.com/DarkWebDivingClub/keymaster-avatar/blob/master/getting-started-newbi.md).
+  `sudo apt install keymaster-avatar` pulls in the relay (`strfry`) and
+  the Bluetooth bridge (`rfcomm-relay`) too.
+- **The phone paired with the desktop over Bluetooth.** That is the
+  only link needed — the phone talks RFCOMM, not IP, so the two do not
+  have to share a WiFi network and nothing is exposed to one.
 
 ## Step 1: Install the App
 
-Install the KeyMaster APK on your phone:
+There is **no published APK yet**, so build it from source and install
+the result over `adb`. Follow
+[getting-started-developer.md](getting-started-developer.md) — it has
+the full build order, which starts with two patched forks and takes
+four repositories in sequence.
 
 ```bash
-adb install app-debug.apk
+# after the build described in getting-started-developer.md
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or build from source (see [getting-started-developer.md](getting-started-developer.md)).
+The debug build installs and runs fine. A signed, published APK is
+keymaster mission 45; until then this is the supported route.
 
 ## Step 2: Set Up Your Seed Phrase
 
@@ -95,14 +105,23 @@ GNUPGHOME=/run/user/$(id -u)/gnupg-keymaster gpg --clearsign <<< "test"
 
 ### After laptop sleep/wake
 
-When the laptop wakes from sleep, BT PAN drops and the relay
-connection dies. The phone shows a "Bluetooth connection lost"
-notification. To recover:
+RFCOMM reconnection is handled by the Bluetooth stack, so in the
+normal case the phone dials back on its own and the app reconnects
+with no QR scan. The laptop's relay also restarts itself on resume (a
+systemd sleep hook), because its websocket listener can freeze across a
+long suspend.
 
-1. On the phone, open Bluetooth settings (tap the notification or
-   the in-app dialog)
-2. Toggle **Internet access** off then on for the paired laptop
-3. The app auto-reconnects — no QR scan needed
+If keys are still missing a minute after waking, on the laptop:
+
+```bash
+sudo systemctl restart rfcomm-relay
+```
+
+That drops the phone's link, which makes it dial back within seconds.
+It is the cure for a session that has gone one-sided — where the phone
+believes it is attached but the Avatar has no session, which happens if
+`km-avatar` was restarted on its own (for instance by a package
+upgrade).
 
 ### After phone reboot
 
@@ -117,45 +136,53 @@ again.
 
 ## Connectivity
 
-The phone connects to the desktop relay over Bluetooth PAN — a
-dedicated BT link independent of WiFi.
+The phone connects over **RFCOMM** — a serial stream over Bluetooth
+Classic. There is no IP layer: no DHCP, no addresses, no WiFi, and
+nothing listening on the network.
 
 ```
-Phone (10.44.0.3) --BT PAN--> Laptop (10.44.0.1) --> strfry :7777
-Laptop WiFi                --> internet
+Phone  --RFCOMM ch 3-->  rfcomm-relay  --websocket-->  strfry :7777
+                                                            ^
+                                                            |
+                                                        km-avatar
 ```
 
-### Prerequisites
+`rfcomm-relay` on the laptop accepts the Bluetooth connection and
+bridges it to the local relay; the Avatar is a client of that same
+relay. The laptop advertises which adapter and channel to dial in the
+attach QR code, so you never type an address.
 
-- Phone and laptop paired via Bluetooth
-- Laptop running bt-nap service (NAP server on `bt-nap-br` bridge)
-- strfry relay listening on the BT PAN interface
+Bluetooth PAN (`bt-nap`, addresses in `10.44.0.0/24`) was the earlier
+transport and is being retired. You do not need it, and it should not
+be installed.
 
-### Establishing BT PAN
+### If you upgrade keymaster-avatar
 
-From the phone: BT settings → paired laptop → tap **CONNECT**.
-The phone gets an IP via DHCP (e.g. 10.44.0.3). Verify from the
-laptop:
+Restart the user services afterwards — they keep running the previous
+binaries otherwise, and signing fails with confusing errors:
 
 ```bash
-ping 10.44.0.3
+systemctl --user restart km-ssh-sa km-gpg-sa km-nostr-sa
 ```
-
-### BT PAN troubleshooting
-
-See [Advanced BT Troubleshooting](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar/blob/master/doc/advanced-bt-troubleshooting.md)
-for common pitfalls — interface naming, connection direction,
-stale PAN state, and sleep/wake recovery.
 
 ## Troubleshooting
 
 ### "Attach failed: Connection to relay timed out"
 
-The phone can't reach the relay. Check:
+The phone can't reach the relay. On the laptop, check in this order:
+
+- Is the bridge listening? `journalctl -u rfcomm-relay -n 5` should
+  show `Listening on <adapter> channel 3`
+- Did the phone actually dial in? The same log shows
+  `Connection from [<phone MAC>]` when it does, then `RFCOMM -> WS`
+  lines once traffic flows. No `Connection from` means the phone is not
+  reaching Bluetooth at all — check pairing with
+  `bluetoothctl info <phone MAC>`, and that it says `Trusted: yes`
 - Is the relay running? `systemctl status strfry`
-- Can the phone reach the relay IP? Ping from phone:
-  `adb shell ping <relay-ip>`
-- Is BT PAN up? `ip link show master bt-nap-br` on the laptop
+- Is the Avatar running? `systemctl status km-avatar`
+
+There is no IP to ping — if you find yourself looking for an address,
+the guide you are following is out of date.
 
 ### SSH/GPG not working after sleep/wake
 
@@ -182,9 +209,22 @@ The app tried 5 times to reconnect and gave up. The relay was
 unreachable during all attempts. Re-establish network connectivity
 and re-attach manually (open app → Attach to Avatar → scan QR).
 
-### BT PAN up but can't ping
+### Bluetooth says connected, but nothing happens
 
-See [Advanced BT Troubleshooting](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar/blob/master/doc/advanced-bt-troubleshooting.md)
-— common causes: stale PAN state (clean BT cycle needed), wrong
-BNEP interface name (check `ip link show master bt-nap-br`),
-or ARP not resolving (restart bt-nap service).
+The Bluetooth link and the RFCOMM session are different things — the
+phone can show `Connected: yes` with no RFCOMM stream at all. Check the
+laptop's `journalctl -u rfcomm-relay` for a `Connection from` line. If
+there is none, restart the bridge:
+
+```bash
+sudo systemctl restart rfcomm-relay
+```
+
+### `ssh-add -l` lists keys but signing fails
+
+That listing is cached public keys and does not prove the phone is
+reachable. Test with something that needs a real signature:
+
+```bash
+echo x | gpg --clearsign
+```
