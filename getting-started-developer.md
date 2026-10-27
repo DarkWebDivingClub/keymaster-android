@@ -30,27 +30,21 @@ build until you have done this.
 
 | Order | Repo | Command | Full instructions |
 |---|---|---|---|
-| 1 | `https://github.com/dukeh3/bitcoinj.git` (fork) | `./gradlew publishToMavenLocal` | [`FORK.md`](https://github.com/dukeh3/bitcoinj/blob/master/FORK.md) |
+| 0 | `https://github.com/DarkWebDivingClub/nostr-java.git` (fork) | `mvn install -DskipTests` | [`FORK.md`](https://github.com/DarkWebDivingClub/nostr-java/blob/main/FORK.md) |
+| 1 | `https://github.com/DarkWebDivingClub/bitcoinj.git` (fork) | `./gradlew publishToMavenLocal` | [`FORK.md`](https://github.com/DarkWebDivingClub/bitcoinj/blob/master/FORK.md) |
 | 2 | `https://github.com/DarkWebDivingClub/keyvault.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keyvault#readme) |
 | 3 | `https://github.com/DarkWebDivingClub/keymaster.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keymaster#build) |
 
-All five KeyMaster repositories are public, so these clone over HTTPS
-with no credentials and no SSH key — useful on a fresh machine. Use the
-`git@github.com:` form instead once you have a key registered and need
-to push.
+All of these repositories are public, so they clone over HTTPS with no
+credentials and no SSH key — useful on a fresh machine. Use the
+`git@github.com:` form once you have a key registered and need to push.
 
-> **The chain above is currently incomplete.** Step 2 fails on a machine
-> with an empty `~/.m2`: `keyvault.nostr` needs `nostr.id.IIdentity`,
-> which is absent from every `xyz.tcheeric:nostr-java-identity` release
-> on Maven Central and exists only in the
-> [FlowRateHQ fork](https://github.com/FlowRateHQ/nostr-java). Until
-> keymaster mission 46.3 versions that fork, build and `mvn install` it
-> as a step 0 before bitcoinj.
-
-Note that bitcoinj is a patched fork living on the `dukeh3` account
-rather than the DarkWebDivingClub org, and the artifacts it produces are
-on no public Maven repository — which is why step 1 is a source build
-rather than a dependency.
+Steps 0 and 1 are patched forks whose artifacts are on no public Maven
+repository, which is why they are source builds rather than
+dependencies. Skipping step 0 is the easy mistake: the upstream
+`xyz.tcheeric` coordinate resolves fine, so the build fails later with a
+*missing class* (`nostr.id.IIdentity`) rather than a missing dependency.
+Each fork's `FORK.md` says what is patched and why.
 
 ## Build
 
@@ -98,8 +92,8 @@ app/src/main/java/club/dwdc/keymaster/
 
 | Dependency | Version | Purpose |
 |-----------|---------|---------|
-| KeyVault Nostr | 0.3.0 | BIP-39/BIP-32 key derivation |
-| KeyMaster Core | 0.7.2 | Identity CRUD, service handlers |
+| KeyVault Nostr | 0.4.0 | BIP-39/BIP-32 key derivation |
+| KeyMaster Core | 0.7.3 | Identity CRUD, service handlers |
 | BouncyCastle | 1.80 | Schnorr (BIP-340), NIP-44 crypto — resolves up to 1.84, pulled in by bitcoinj |
 | CameraX | 1.4.1 | QR code scanning |
 | OkHttp | 4.12.0 | WebSocket for NIP-46 relays |
