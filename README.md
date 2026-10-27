@@ -19,7 +19,7 @@ The app supports three signing modes:
   connect to the desktop. Start here.
 - **[Getting Started — Developer](getting-started-developer.md)** —
   Build from source, project structure, dependencies.
-- **[KeyMaster Avatar](https://github.com/DarkWebDivingClub/club.dwdc.keymaster.avatar)** —
+- **[KeyMaster Avatar](https://github.com/DarkWebDivingClub/keymaster-avatar)** —
   The desktop side (needed for SSH/GPG/Nostr bridging).
 
 ## License
