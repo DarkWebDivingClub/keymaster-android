@@ -30,19 +30,24 @@ build until you have done this.
 
 | Order | Repo | Command | Full instructions |
 |---|---|---|---|
-| 1 | `git@github.com:dukeh3/bitcoinj.git` (fork) | `./gradlew publishToMavenLocal` | [`FORK.md`](https://github.com/dukeh3/bitcoinj/blob/master/FORK.md) |
-| 2 | `git@github.com:DarkWebDivingClub/keyvault.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keyvault#readme) |
-| 3 | `git@github.com:DarkWebDivingClub/keymaster.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keymaster#build) |
+| 1 | `https://github.com/dukeh3/bitcoinj.git` (fork) | `./gradlew publishToMavenLocal` | [`FORK.md`](https://github.com/dukeh3/bitcoinj/blob/master/FORK.md) |
+| 2 | `https://github.com/DarkWebDivingClub/keyvault.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keyvault#readme) |
+| 3 | `https://github.com/DarkWebDivingClub/keymaster.git` | `mvn install` | [README](https://github.com/DarkWebDivingClub/keymaster#build) |
 
-bitcoinj is a patched fork on a personal account rather than the
-DarkWebDivingClub org, and is not on any public repository — if you
-cannot clone it, ask for access before anything else, because it is step
-one.
+All five KeyMaster repositories are public, so these clone over HTTPS
+with no credentials and no SSH key — useful on a fresh machine. Use the
+`git@github.com:` form instead once you have a key registered and need
+to push.
+
+Note that bitcoinj is a patched fork living on the `dukeh3` account
+rather than the DarkWebDivingClub org, and the artifacts it produces are
+on no public Maven repository — which is why step 1 is a source build
+rather than a dependency.
 
 ## Build
 
 ```bash
-git clone git@github.com:DarkWebDivingClub/keymaster-android.git
+git clone https://github.com/DarkWebDivingClub/keymaster-android.git
 cd keymaster-android
 ./gradlew test assembleDebug
 ```
