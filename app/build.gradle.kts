@@ -66,9 +66,9 @@ configurations.all {
 
 dependencies {
     // KeyVault nostr: key derivation + KeyVaultIdentity (IIdentity) + NIP-44 support
-    implementation("club.dwdc:club.dwdc.keyvault.nostr:0.4.0")
+    implementation("club.dwdc:club.dwdc.keyvault.nostr:0.5.0")
     // KeyMaster core: identity CRUD (KeyMasterController, KVMetaStore)
-    implementation("club.dwdc:club.dwdc.keymaster.core:0.7.3")
+    implementation("club.dwdc:club.dwdc.keymaster.core:0.8.1")
     // BouncyCastle — needed for Schnorr (BIP-340) and ChaCha20 (NIP-44)
     implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
