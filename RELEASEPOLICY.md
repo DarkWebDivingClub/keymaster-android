@@ -31,3 +31,6 @@ git tag -s v<version> -m "<summary of what changed since last tag>"
 |---------|-------------|
 | v0.2.0  | npub (bech32) display on home screen |
 | v0.3.0  | Multi-account support, Gson HTML escaping fix (#16) |
+| v0.4.0  | Multi-realm, service lifecycle |
+| v0.4.1  | Android 13 fix: core 0.7.1 (Stream.toList) |
+| v0.5.0  | X.509 keys served over the avatar channel: core 0.8.1, keyvault 0.5.0 (P-256 ECDSA); fallback point before the KeyVault 0.6.0 uplift |
