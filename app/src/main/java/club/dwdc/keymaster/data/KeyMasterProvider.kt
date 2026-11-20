@@ -1,6 +1,7 @@
 package club.dwdc.keymaster.data
 
 import android.content.Context
+import android.util.Log
 import club.dwdc.keymaster.GPGKeyEntry
 import club.dwdc.keymaster.KVMetaStore
 import club.dwdc.keymaster.KeyMaster
@@ -9,6 +10,7 @@ import club.dwdc.keymaster.NostrKeyEntry
 import club.dwdc.keymaster.NostrRelayClient
 import club.dwdc.keymaster.rfcomm.RfcommRelayClient
 import club.dwdc.keyvault.core.Bip32KeyVault
+import club.dwdc.keyvault.core.KeyVault
 
 /**
  * Singleton provider for [KeyMasterController] on Android.
@@ -17,6 +19,8 @@ import club.dwdc.keyvault.core.Bip32KeyVault
  * Returns null if no seed is stored yet.
  */
 object KeyMasterProvider {
+
+    private const val TAG = "KeyMasterProvider"
 
     @Volatile
     private var controller: KeyMasterController? = null
@@ -34,7 +38,7 @@ object KeyMasterProvider {
             val vault = Bip32KeyVault(mnemonic, passphrase)
             val store = getMetaStore(context)
             val km = KeyMaster(vault, store)
-            return KeyMasterController(km).apply {
+            val created = KeyMasterController(km).apply {
                 setRelayClientFactory { descriptor ->
                     if (descriptor.isRfcomm) {
                         RfcommRelayClient(descriptor.btAddr(), descriptor.rfcommChannel())
@@ -42,8 +46,25 @@ object KeyMasterProvider {
                         NostrRelayClient(descriptor.relay())
                     }
                 }
-            }.also { controller = it }
+            }
+            // Before anything reads the stored paths (realms, UI).
+            repair(store, vault, created)
+            this.vault = vault
+            return created.also { controller = it }
         }
+    }
+
+    @Volatile
+    private var vault: KeyVault? = null
+
+    private fun repair(store: AndroidKVMetaStore, vault: KeyVault, controller: KeyMasterController) {
+        val removed = StoreRepair(store, vault,
+            createIdentity = { identity, name, email, time ->
+                controller.createIdentity(identity, name, email, time)
+            },
+            log = { Log.i(TAG, "store repair: $it") },
+        ).run()
+        if (removed > 0) Log.i(TAG, "store repair: replaced $removed entries the vault refuses")
     }
 
     fun getMetaStore(context: Context): AndroidKVMetaStore {
@@ -59,6 +80,7 @@ object KeyMasterProvider {
         synchronized(this) {
             controller = null
             metaStore = null
+            vault = null
         }
     }
 
@@ -71,6 +93,9 @@ object KeyMasterProvider {
     fun reDeriveAllIdentities(context: Context) {
         val store = getMetaStore(context)
         val controller = getController(context) ?: return
+        // An imported export may hold paths the vault refuses: replace them
+        // first, so the loop below rewrites entries in place.
+        vault?.let { repair(store, it, controller) }
         for (identity in store.identities()) {
             val gpgEntries = store.byIdentity(identity)
                 .filterIsInstance<GPGKeyEntry>()
