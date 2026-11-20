@@ -16,8 +16,8 @@ android {
         applicationId = "club.dwdc.keymaster"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.5.0"
+        versionCode = 7
+        versionName = "0.6.0"
     }
 
     compileOptions {
@@ -66,11 +66,14 @@ configurations.all {
 
 dependencies {
     // KeyVault nostr: key derivation + KeyVaultIdentity (IIdentity) + NIP-44 support
-    implementation("club.dwdc:club.dwdc.keyvault.nostr:0.5.0")
+    implementation("club.dwdc:club.dwdc.keyvault.nostr:0.6.0")
     // KeyMaster core: identity CRUD (KeyMasterController, KVMetaStore)
-    implementation("club.dwdc:club.dwdc.keymaster.core:0.8.1")
+    implementation("club.dwdc:club.dwdc.keymaster.core:0.9.1")
     // BouncyCastle — needed for Schnorr (BIP-340) and ChaCha20 (NIP-44)
     implementation("org.bouncycastle:bcprov-jdk18on:1.80")
+
+    // Unit tests (JVM, no Android framework)
+    testImplementation("junit:junit:4.13.2")
 
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")

@@ -21,9 +21,10 @@ import java.io.File
  * (`filesDir/kv-metadata.json`). Same JSON format as the desktop
  * FileKVMetaStore — a `Map<String, JsonObject>` keyed by HD path string.
  */
-class AndroidKVMetaStore(context: Context) : KVMetaStore {
+class AndroidKVMetaStore(val storeFile: File) : KVMetaStore {
 
-    private val storeFile: File = File(context.filesDir, "kv-metadata.json")
+    constructor(context: Context) : this(File(context.filesDir, FILE_NAME))
+
     private val entries: MutableMap<HDPath, AbstractKeyEntry> = load()
 
     override fun put(entry: AbstractKeyEntry) {
@@ -72,6 +73,13 @@ class AndroidKVMetaStore(context: Context) : KVMetaStore {
         save()
     }
 
+    /** Copy the store file to [target] as it is on disk now; false if there is no file. */
+    fun copyFileTo(target: File): Boolean {
+        if (!storeFile.exists()) return false
+        storeFile.copyTo(target, overwrite = true)
+        return true
+    }
+
     // --- persistence ---
 
     private fun load(): MutableMap<HDPath, AbstractKeyEntry> {
@@ -97,6 +105,8 @@ class AndroidKVMetaStore(context: Context) : KVMetaStore {
     }
 
     companion object {
+        const val FILE_NAME = "kv-metadata.json"
+
         private val GSON = GsonBuilder()
             .setPrettyPrinting()
             .disableHtmlEscaping()
