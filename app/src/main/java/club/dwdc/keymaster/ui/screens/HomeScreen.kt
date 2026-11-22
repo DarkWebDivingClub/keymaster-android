@@ -44,6 +44,8 @@ import club.dwdc.keymaster.data.Nip46Session
 import club.dwdc.keymaster.data.Nip46SessionRepository
 import club.dwdc.keymaster.data.PermissionRepository
 import club.dwdc.keymaster.data.SeedRepository
+import club.dwdc.keymaster.data.X509Row
+import club.dwdc.keymaster.data.x509Rows
 import club.dwdc.keymaster.nip46.Nip46Service
 import club.dwdc.keymaster.ui.components.CreateAccountDialog
 
@@ -555,6 +557,13 @@ private fun KeyEntriesCard(identity: String) {
     val sshCount = entries.count { it is SSHKeyEntry }
     val gpgEntries = entries.filterIsInstance<GPGKeyEntry>()
     val nostrEntries = entries.filterIsInstance<NostrKeyEntry>()
+    // Computed from the identity, so identities created before 0.6.2 show
+    // their X.509 keys too; the certificate comes from the store.
+    val x509 = remember(identity) {
+        val vault = KeyMasterProvider.getController(context)?.keyMaster?.vault
+        if (vault == null) emptyList()
+        else x509Rows(identity, KeyMasterProvider.getMetaStore(context), vault)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -599,6 +608,12 @@ private fun KeyEntriesCard(identity: String) {
                         type = "Nostr",
                         detail = nostr.pubkey().take(16) + "..." + nostr.pubkey().takeLast(8)
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                // X.509
+                for (row in x509) {
+                    X509KeyRow(row)
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
@@ -859,6 +874,44 @@ private fun KeyTypeRow(type: String, detail: String) {
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/** An X.509 key: label, curve and SPKI fingerprint; the certificate when one is stored. */
+@Composable
+private fun X509KeyRow(row: X509Row) {
+    KeyTypeRow(
+        type = "X.509 (${row.label.substringAfterLast(' ')})",
+        detail = "P-256 " + row.spkiSha256.take(16) + "..."
+    )
+    val cert = row.cert
+    Column(modifier = Modifier.padding(start = 120.dp)) {
+        if (cert == null) {
+            Text(
+                text = "No certificate",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            val soon = cert.expiresSoon(System.currentTimeMillis())
+            Text(
+                text = cert.subject,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "issuer " + cert.issuer,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "expires " + java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT)
+                    .format(java.util.Date(cert.notAfterMillis)),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (soon) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

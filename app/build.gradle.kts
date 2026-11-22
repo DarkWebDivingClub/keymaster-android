@@ -16,8 +16,8 @@ android {
         applicationId = "club.dwdc.keymaster"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.6.1"
+        versionCode = 9
+        versionName = "0.6.2"
     }
 
     compileOptions {
@@ -68,7 +68,7 @@ dependencies {
     // KeyVault nostr: key derivation + KeyVaultIdentity (IIdentity) + NIP-44 support
     implementation("club.dwdc:club.dwdc.keyvault.nostr:0.6.0")
     // KeyMaster core: identity CRUD (KeyMasterController, KVMetaStore)
-    implementation("club.dwdc:club.dwdc.keymaster.core:0.9.1")
+    implementation("club.dwdc:club.dwdc.keymaster.core:0.9.2")
     // BouncyCastle — needed for Schnorr (BIP-340) and ChaCha20 (NIP-44)
     implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
