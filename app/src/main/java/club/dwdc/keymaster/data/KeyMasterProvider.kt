@@ -22,6 +22,9 @@ object KeyMasterProvider {
 
     private const val TAG = "KeyMasterProvider"
 
+    /** Relay links shared per host by every connector (mission 53). */
+    private val relayLinks = RelayLinkPool { Log.i("RelayLinkPool", it) }
+
     @Volatile
     private var controller: KeyMasterController? = null
 
@@ -39,11 +42,23 @@ object KeyMasterProvider {
             val store = getMetaStore(context)
             val km = KeyMaster(vault, store)
             val created = KeyMasterController(km).apply {
+                // One link per host, shared by every realm that reaches it
+                // (mission 53): a second RFCOMM connection to the same channel
+                // fails and takes the first one down.
                 setRelayClientFactory { descriptor ->
-                    if (descriptor.isRfcomm) {
-                        RfcommRelayClient(descriptor.btAddr(), descriptor.rfcommChannel())
-                    } else {
-                        NostrRelayClient(descriptor.relay())
+                    relayLinks.handle(
+                        RelayLinkPool.keyOf(
+                            descriptor.isRfcomm,
+                            if (descriptor.isRfcomm) descriptor.btAddr() else null,
+                            if (descriptor.isRfcomm) descriptor.rfcommChannel() else 0,
+                            if (descriptor.isRfcomm) null else descriptor.relay()
+                        )
+                    ) {
+                        if (descriptor.isRfcomm) {
+                            RfcommRelayClient(descriptor.btAddr(), descriptor.rfcommChannel())
+                        } else {
+                            NostrRelayClient(descriptor.relay())
+                        }
                     }
                 }
             }

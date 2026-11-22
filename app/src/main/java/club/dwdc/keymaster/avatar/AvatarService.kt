@@ -64,8 +64,11 @@ class AvatarService : Service() {
     private var aclReceiver: BroadcastReceiver? = null
     private var rfcommMode = false
 
-    /** Per connector, so one avatar's backoff cannot block another's. */
-    private val reconnecting = ConcurrentHashMap<String, AtomicBoolean>()
+    /**
+     * One reconnect loop per (realm, connector), cancellable, and never one
+     * that detaches a connected connector (mission 53).
+     */
+    private lateinit var supervisor: ReconnectSupervisor
     private val previousState = ConcurrentHashMap<String, NostrTransport.ConnectionState>()
 
     /** Realms that already have a state listener installed. */
@@ -90,6 +93,7 @@ class AvatarService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
         realmRepo = RealmRepository(this)
+        supervisor = ReconnectSupervisor(serviceScope, ReconnectOps(), log = { Log.i(TAG, it) })
         // Show what is stored immediately, all connectors disconnected until
         // each attach says otherwise.
         _realms.value = realmRepo.getRealms().map { it.toUi() }
@@ -451,7 +455,7 @@ class AvatarService : Service() {
                 if (left.isEmpty()) realmRepo.remove(realmId)
                 else realmRepo.upsert(stored.copy(connectors = left))
             }
-            reconnecting.remove("$realmId:$connectorId")
+            supervisor.cancel(realmId, connectorId)
             previousState.remove("$realmId:$connectorId")
             publish(controller)
             Log.i(TAG, "Detached connector $connectorId from realm $realmId")
@@ -467,6 +471,7 @@ class AvatarService : Service() {
             } catch (e: Exception) {
                 Log.w(TAG, "Detach of realm $realmId failed: ${e.message}")
             }
+            supervisor.cancelRealm(realmId)
             realmRepo.remove(realmId)
             listening.remove(realmId)
             publish(controller)
@@ -558,11 +563,8 @@ class AvatarService : Service() {
 
         if (rfcommMode && state == NostrTransport.ConnectionState.DISCONNECTED) {
             val descriptorJson = descriptorOf(realmId, connectorId)
-            if (descriptorJson != null && guard(realmId, connectorId).compareAndSet(false, true)) {
+            if (descriptorJson != null && supervisor.start(realmId, connectorId, descriptorJson)) {
                 Log.i(TAG, "Connector $connectorId dropped; reconnecting")
-                serviceScope.launch {
-                    reconnectWithBackoff(controller, realmId, connectorId, descriptorJson)
-                }
             }
         }
     }
@@ -624,81 +626,52 @@ class AvatarService : Service() {
     }
 
     /**
-     * One guard per avatar per realm. Keying on the connector alone would let
-     * one realm's reconnect block another's for the same avatar, which is a
-     * legitimate configuration.
-     */
-    private fun guard(realmId: Int, connectorId: Int): AtomicBoolean =
-        reconnecting.computeIfAbsent("$realmId:$connectorId") { AtomicBoolean(false) }
-
-    /**
-     * Re-attach one connector, leaving every other connector alone.
+     * What the reconnect loops do to the core and the store.
      *
      * The dead connector is closed through the realm rather than the
      * controller: the controller removes a realm that loses its last
      * connector, which would take the realm's handlers down with it and turn a
      * reconnect into a re-create.
      */
-    private fun reconnectWithBackoff(
-        controller: KeyMasterController,
-        realmId: Int,
-        connectorId: Int,
-        descriptorJson: String
-    ) {
-        try {
-            // The fast attempts, then a slow one that never stops while the
-            // connector is still in the store. Giving up was a real failure
-            // on hardware: after five tries over 38 seconds the row stayed
-            // dead even once its bridge came back, because the ACL link was
-            // still up — so no ACL_CONNECTED broadcast ever arrived to
-            // trigger another attempt, and the watchdog only looks for a dead
-            // service.
-            val fast = longArrayOf(0, 3000, 5000, 10000, 20000)
-            val delays = fast.toMutableList()
-            var attempt = 0
-            while (true) {
-                val delay = delays.getOrElse(attempt) { SLOW_RETRY_MS }
-                if (attempt >= fast.size && !stillWanted(connectorId)) {
-                    Log.i(TAG, "Connector $connectorId is no longer stored; giving up")
-                    return
-                }
-                noteRetry(realmId, connectorId, attempt + 1, null)
-                if (delay > 0) {
-                    Log.i(TAG, "Connector $connectorId retry ${attempt + 1} in ${delay}ms")
-                    Thread.sleep(delay)
-                }
-                try {
-                    // The id can move under us: a restore in flight rebuilds
-                    // every realm and reassigns its id, and an ACL broadcast
-                    // arriving at that moment would otherwise retry five times
-                    // against a realm that is merely renumbered, not gone.
-                    val liveId = liveRealmFor(controller, realmId, connectorId)
-                    controller.getRealm(liveId)?.let { realm ->
-                        try {
-                            realm.detach(connectorId)
-                        } catch (e: Exception) {
-                            Log.d(TAG, "Stale connector would not close cleanly: ${e.message}")
-                        }
-                    }
-                    controller.attachToRealm(liveId, AvatarDescriptor.fromJson(descriptorJson))
-                    Log.i(TAG, "Connector $connectorId re-attached" +
-                        if (attempt > 0) " (attempt ${attempt + 1})" else "")
-                    cancelBtReconnectNotification()
-                    publish(controller)
-                    return
-                } catch (e: Exception) {
-                    Log.w(TAG, "Re-attach ${attempt + 1} failed: ${e.message}")
-                }
-                attempt++
-                if (attempt == fast.size) {
-                    Log.w(TAG, "Fast attempts exhausted for connector $connectorId; " +
-                        "retrying every ${SLOW_RETRY_MS / 1000}s")
-                    updateNotification(notificationText())
-                }
+    private inner class ReconnectOps : ReconnectSupervisor.Ops {
+        private val controller get() = requireController()
+
+        override fun liveRealmFor(realmId: Int, connectorId: Int): Int =
+            liveRealmFor(controller, realmId, connectorId)
+
+        override fun isConnected(realmId: Int, connectorId: Int): Boolean =
+            controller.getRealm(realmId)?.connectorIds()?.contains(connectorId) == true &&
+                previousState["$realmId:$connectorId"] == NostrTransport.ConnectionState.CONNECTED
+
+        override fun stillWanted(connectorId: Int): Boolean =
+            this@AvatarService.stillWanted(connectorId)
+
+        override fun closeStale(realmId: Int, connectorId: Int) {
+            val realm = controller.getRealm(realmId) ?: return
+            if (!realm.connectorIds().contains(connectorId)) return
+            try {
+                realm.detach(connectorId)
+            } catch (e: Exception) {
+                Log.d(TAG, "Stale connector would not close cleanly: ${e.message}")
             }
-        } finally {
-            guard(realmId, connectorId).set(false)
         }
+
+        override fun attach(realmId: Int, connectorId: Int, descriptorJson: String) {
+            controller.attachToRealm(realmId, AvatarDescriptor.fromJson(descriptorJson))
+        }
+
+        override fun onAttempt(realmId: Int, connectorId: Int, attempt: Int) =
+            noteRetry(realmId, connectorId, attempt, null)
+
+        override fun onReattached(realmId: Int, connectorId: Int, attempt: Int) {
+            Log.i(TAG, "Connector $connectorId re-attached" +
+                if (attempt > 1) " (attempt $attempt)" else "")
+            cancelBtReconnectNotification()
+            publish(KeyMasterProvider.getController(this@AvatarService))
+        }
+
+        override fun onSlow(realmId: Int, connectorId: Int) =
+            updateNotification(notificationText())
     }
 
     // --- State published to the UI ---
@@ -760,7 +733,7 @@ class AvatarService : Service() {
             Log.w(TAG, "Error during detach cleanup", e)
         }
         listening.clear()
-        reconnecting.clear()
+        if (::supervisor.isInitialized) supervisor.cancelAll()
         previousState.clear()
         _realms.value = realmRepo.getRealms().map { it.toUi() }
     }
@@ -840,16 +813,12 @@ class AvatarService : Service() {
 
     /** Every connector that is not connected gets a retry; the rest are left alone. */
     private fun reconnectEveryDownConnector(reason: String) {
-        val controller = KeyMasterProvider.getController(this) ?: return
+        KeyMasterProvider.getController(this) ?: return
         for (realm in _realms.value) {
             for (connector in realm.connectors) {
                 if (connector.state == NostrTransport.ConnectionState.CONNECTED) continue
-                if (!guard(realm.id, connector.id).compareAndSet(false, true)) continue
+                if (!supervisor.start(realm.id, connector.id, connector.descriptorJson)) continue
                 Log.i(TAG, "Reconnecting ${connector.label} after $reason")
-                serviceScope.launch {
-                    reconnectWithBackoff(controller, realm.id, connector.id,
-                        connector.descriptorJson)
-                }
             }
         }
     }
@@ -862,7 +831,7 @@ class AvatarService : Service() {
                 val address = intent.getParcelableExtra<BluetoothDevice>(
                     BluetoothDevice.EXTRA_DEVICE
                 )?.address ?: return
-                val controller = KeyMasterProvider.getController(this@AvatarService) ?: return
+                KeyMasterProvider.getController(this@AvatarService) ?: return
 
                 // Only the connector on that device: another avatar's link
                 // coming up says nothing about this one.
@@ -873,12 +842,10 @@ class AvatarService : Service() {
                         }.getOrNull() ?: continue
                         if (!btAddr.equals(address, ignoreCase = true)) continue
                         if (connector.state == NostrTransport.ConnectionState.CONNECTED) continue
-                        if (!guard(realm.id, connector.id).compareAndSet(false, true)) continue
-                        Log.i(TAG, "ACL up for ${connector.label}; reconnecting")
-                        serviceScope.launch {
-                            reconnectWithBackoff(controller, realm.id, connector.id,
-                                connector.descriptorJson)
+                        if (!supervisor.start(realm.id, connector.id, connector.descriptorJson)) {
+                            continue
                         }
+                        Log.i(TAG, "ACL up for ${connector.label}; reconnecting")
                     }
                 }
             }
@@ -1053,9 +1020,6 @@ class AvatarService : Service() {
         const val ACTION_STOP = "club.dwdc.keymaster.avatar.STOP"
         const val ACTION_RESTORE = "club.dwdc.keymaster.avatar.RESTORE"
         const val ACTION_RECONNECT = "club.dwdc.keymaster.avatar.RECONNECT"
-
-        /** The steady interval the backoff settles into, having given up on haste. */
-        private const val SLOW_RETRY_MS = 60_000L
 
         const val EXTRA_DESCRIPTOR_JSON = "descriptor_json"
         const val EXTRA_IDENTITY = "identity"
