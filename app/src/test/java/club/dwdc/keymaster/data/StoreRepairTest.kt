@@ -64,7 +64,7 @@ class StoreRepairTest {
         assertEquals(0, repairOf(AndroidKVMetaStore(storeFile)).refused().size)
         for ((id, npub) in listOf(ALICE to ALICE_NPUB, BOB to BOB_NPUB)) {
             val entries = AndroidKVMetaStore(storeFile).byIdentity(id)
-            assertEquals("one Nostr, one SSH, two GPG for $id", 4, entries.size)
+            assertEquals("one Nostr, one SSH, two GPG, one X.509 (mission 50) for $id", 5, entries.size)
             val identity = Identity(id)
 
             val nostr = entries.filterIsInstance<NostrKeyEntry>().single()
@@ -123,7 +123,7 @@ class StoreRepairTest {
         assertEquals(3, repairOf(store).run())
 
         val entries = AndroidKVMetaStore(storeFile).byIdentity(ALICE)
-        assertEquals(4, entries.size)
+        assertEquals("four, plus the X.509 entry (mission 50)", 5, entries.size)
         assertTrue(repairOf(AndroidKVMetaStore(storeFile)).refused().isEmpty())
     }
 

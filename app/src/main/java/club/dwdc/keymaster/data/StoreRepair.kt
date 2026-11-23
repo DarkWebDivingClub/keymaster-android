@@ -2,8 +2,7 @@ package club.dwdc.keymaster.data
 
 import club.dwdc.keymaster.AbstractKeyEntry
 import club.dwdc.keymaster.GPGKeyEntry
-import club.dwdc.keymaster.NostrKeyEntry
-import club.dwdc.keyvault.core.Alg
+import club.dwdc.keymaster.IdentityPaths
 import club.dwdc.keyvault.core.KeyVault
 import java.io.File
 import java.time.Instant
@@ -29,8 +28,9 @@ class StoreRepair(
     private val now: () -> Long = { Instant.now().epochSecond },
 ) {
 
-    /** Entries the vault refuses to serve. */
-    fun refused(): List<AbstractKeyEntry> = store.all().filter { !vaultAccepts(it) }
+    /** Entries the vault refuses to serve. Opaque entries are kept as they are, never judged. */
+    fun refused(): List<AbstractKeyEntry> =
+        store.all().filter { it !is OpaqueKeyEntry && !vaultAccepts(it) }
 
     /** Repair the store; returns the number of entries removed (0 = nothing to do). */
     fun run(): Int {
@@ -60,7 +60,9 @@ class StoreRepair(
     }
 
     private fun vaultAccepts(entry: AbstractKeyEntry): Boolean {
-        val alg = if (entry is NostrKeyEntry) Alg.SECP256K1 else Alg.ED25519
+        // The coin type's algorithm: X.509 is P-256 (mission 50). Checking it
+        // as Ed25519 would remove X.509 entries, and their certificates.
+        val alg = IdentityPaths.algFor(entry.coinType())
         val path = entry.path().list().map { it.i() }.toIntArray()
         return try {
             vault.execute(alg, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, *path).isOk

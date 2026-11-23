@@ -44,6 +44,8 @@ import club.dwdc.keymaster.data.Nip46Session
 import club.dwdc.keymaster.data.Nip46SessionRepository
 import club.dwdc.keymaster.data.PermissionRepository
 import club.dwdc.keymaster.data.SeedRepository
+import club.dwdc.keymaster.data.X509Row
+import club.dwdc.keymaster.data.x509Rows
 import club.dwdc.keymaster.nip46.Nip46Service
 import club.dwdc.keymaster.ui.components.CreateAccountDialog
 
@@ -322,8 +324,10 @@ private fun AccountPage(
         // Avatar card
         AvatarsCard(
             realms = myRealms,
+            allRealms = realms,
             onAttach = onNavigateToAvatarScan,
             onDetachAll = { AvatarService.detach(context) },
+            onDetachRealm = { realmId -> AvatarService.detachRealm(context, realmId) },
             onDetachConnector = { realmId, connectorId ->
                 AvatarService.detachConnector(context, realmId, connectorId)
             },
@@ -555,6 +559,13 @@ private fun KeyEntriesCard(identity: String) {
     val sshCount = entries.count { it is SSHKeyEntry }
     val gpgEntries = entries.filterIsInstance<GPGKeyEntry>()
     val nostrEntries = entries.filterIsInstance<NostrKeyEntry>()
+    // Computed from the identity, so identities created before 0.6.2 show
+    // their X.509 keys too; the certificate comes from the store.
+    val x509 = remember(identity) {
+        val vault = KeyMasterProvider.getController(context)?.keyMaster?.vault
+        if (vault == null) emptyList()
+        else x509Rows(identity, KeyMasterProvider.getMetaStore(context), vault)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -602,6 +613,12 @@ private fun KeyEntriesCard(identity: String) {
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
+                // X.509
+                for (row in x509) {
+                    X509KeyRow(row)
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
                 Text(
                     text = "${entries.size} key${if (entries.size != 1) "s" else ""} total",
                     style = MaterialTheme.typography.labelSmall,
@@ -615,13 +632,43 @@ private fun KeyEntriesCard(identity: String) {
 @Composable
 private fun AvatarsCard(
     realms: List<RealmUi>,
+    allRealms: List<RealmUi>,
     onAttach: () -> Unit,
     onDetachAll: () -> Unit,
+    onDetachRealm: (realmId: Int) -> Unit,
     onDetachConnector: (realmId: Int, connectorId: Int) -> Unit,
     onRenameRealm: (realmId: Int, name: String) -> Unit
 ) {
     val connectors = realms.flatMap { it.connectors }
     var renaming by remember { mutableStateOf<Int?>(null) }
+    var confirmDetachAll by remember { mutableStateOf(false) }
+
+    if (confirmDetachAll) {
+        // Detach all acts on every realm the phone serves, not only this
+        // identity's, so the count is over all of them.
+        val realmCount = allRealms.count { it.connectors.isNotEmpty() }
+        val avatarCount = allRealms.sumOf { it.connectors.size }
+        AlertDialog(
+            onDismissRequest = { confirmDetachAll = false },
+            title = { Text("Detach everything?") },
+            text = {
+                Text(
+                    "This drops $realmCount realm${if (realmCount != 1) "s" else ""} and " +
+                        "$avatarCount avatar${if (avatarCount != 1) "s" else ""}, on every identity. " +
+                        "None of them come back by themselves: each has to be scanned again."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDetachAll = false
+                    onDetachAll()
+                }) { Text("Detach all", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDetachAll = false }) { Text("Cancel") }
+            }
+        )
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -666,7 +713,8 @@ private fun AvatarsCard(
                             onRename = { name ->
                                 renaming = null
                                 onRenameRealm(realm.id, name)
-                            }
+                            },
+                            onDetach = { onDetachRealm(realm.id) }
                         )
                     }
                     // Two avatars on one desktop share its Bluetooth name;
@@ -694,15 +742,21 @@ private fun AvatarsCard(
 
             if (connectors.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
+                // One realm: the button detaches that realm, as its heading
+                // (hidden with one realm) would. Several: each realm has its
+                // own Detach, and this one drops everything after asking.
+                val single = realms.singleOrNull { it.connectors.isNotEmpty() }
+                    ?.takeIf { realms.size == 1 }
                 OutlinedButton(
-                    onClick = onDetachAll,
+                    onClick = {
+                        if (single != null) onDetachRealm(single.id) else confirmDetachAll = true
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     )
                 ) {
-                    // "Detach" only while it can mean one thing.
-                    Text(if (connectors.size == 1) "Detach" else "Detach all")
+                    Text(if (single != null) "Detach" else "Detach all…")
                 }
             }
         }
@@ -711,14 +765,16 @@ private fun AvatarsCard(
 
 /**
  * A realm is a heading inside the card, not a card of its own: one bold line
- * with a rename pencil, and no per-realm controls.
+ * with a rename pencil and a Detach for this realm only (its avatars; the
+ * other realms stay attached).
  */
 @Composable
 private fun RealmHeading(
     realm: RealmUi,
     renaming: Boolean,
     onStartRename: () -> Unit,
-    onRename: (String) -> Unit
+    onRename: (String) -> Unit,
+    onDetach: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -749,6 +805,11 @@ private fun RealmHeading(
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            if (realm.connectors.isNotEmpty()) {
+                TextButton(onClick = onDetach) {
+                    Text("Detach", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }
@@ -859,6 +920,44 @@ private fun KeyTypeRow(type: String, detail: String) {
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/** An X.509 key: label, curve and SPKI fingerprint; the certificate when one is stored. */
+@Composable
+private fun X509KeyRow(row: X509Row) {
+    KeyTypeRow(
+        type = "X.509 (${row.label.substringAfterLast(' ')})",
+        detail = "P-256 " + row.spkiSha256.take(16) + "..."
+    )
+    val cert = row.cert
+    Column(modifier = Modifier.padding(start = 120.dp)) {
+        if (cert == null) {
+            Text(
+                text = "No certificate",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            val soon = cert.expiresSoon(System.currentTimeMillis())
+            Text(
+                text = cert.subject,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "issuer " + cert.issuer,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "expires " + java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT)
+                    .format(java.util.Date(cert.notAfterMillis)),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (soon) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

@@ -6,6 +6,7 @@ import club.dwdc.keymaster.GPGKeyEntry
 import club.dwdc.keymaster.KVMetaStore
 import club.dwdc.keymaster.NostrKeyEntry
 import club.dwdc.keymaster.SSHKeyEntry
+import club.dwdc.keymaster.X509KeyEntry
 import club.dwdc.keyvault.core.Protocol
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
@@ -13,6 +14,7 @@ import com.google.gson.reflect.TypeToken
 import org.bitcoinj.crypto.ChildNumber
 import org.bitcoinj.crypto.HDPath
 import java.io.File
+import java.util.Base64
 
 /**
  * Android implementation of [KVMetaStore].
@@ -20,6 +22,10 @@ import java.io.File
  * Stores all key entries as a JSON map in app-private storage
  * (`filesDir/kv-metadata.json`). Same JSON format as the desktop
  * FileKVMetaStore — a `Map<String, JsonObject>` keyed by HD path string.
+ *
+ * Each entry is typed by its path's coin type. X.509 entries carry their
+ * certificate as `cert`, base64 DER (mission 50). A coin type the app does not
+ * know is kept as an [OpaqueKeyEntry] and written back unchanged.
  */
 class AndroidKVMetaStore(val storeFile: File) : KVMetaStore {
 
@@ -116,6 +122,7 @@ class AndroidKVMetaStore(val storeFile: File) : KVMetaStore {
             object : TypeToken<LinkedHashMap<String, JsonObject>>() {}.type
 
         private fun serializeEntry(entry: AbstractKeyEntry): JsonObject {
+            if (entry is OpaqueKeyEntry) return entry.raw()
             val obj = JsonObject()
             obj.addProperty("identity", entry.identity())
             when (entry) {
@@ -126,6 +133,9 @@ class AndroidKVMetaStore(val storeFile: File) : KVMetaStore {
                     obj.addProperty("creation_time", entry.creationTime().toString())
                 }
                 is NostrKeyEntry -> obj.addProperty("pubkey", entry.pubkey())
+                is X509KeyEntry -> entry.certificate().ifPresent {
+                    obj.addProperty("cert", Base64.getEncoder().encodeToString(it))
+                }
             }
             return obj
         }
@@ -150,10 +160,13 @@ class AndroidKVMetaStore(val storeFile: File) : KVMetaStore {
                     val pubkey = if (obj.has("pubkey")) obj.get("pubkey").asString else ""
                     NostrKeyEntry(path, identity, pubkey)
                 }
-                else -> {
-                    val comment = if (obj.has("comment")) obj.get("comment").asString else identity
-                    SSHKeyEntry(path, identity, comment)
+                // 0.6.1 and earlier wrote X.509 entries as SSH (a `comment`
+                // and no `cert`); the path says X.509, so they read back as such.
+                Protocol.X509.coinType() -> {
+                    val cert = if (obj.has("cert")) Base64.getDecoder().decode(obj.get("cert").asString) else null
+                    X509KeyEntry(path, identity, cert)
                 }
+                else -> OpaqueKeyEntry(path, identity, obj)
             }
         }
 
